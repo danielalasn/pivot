@@ -1,0 +1,126 @@
+/* -----------------------------------------------------------------------------
+ * ESTILOS PERSONALIZADOS - PÍVOT (TEMA OSCURO MODERNO)
+ * -------------------------------------------------------------------------- */
+
+/* --- FUENTE PRINCIPAL --- */
+body, html {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+    background-color: #111111 !important; /* Fondo principal muy oscuro */
+    color: #E0E0E0 !important; /* Texto principal claro */
+}
+
+h1, h2, h3, h4, h5, h6 {
+    color: #FFFFFF; /* Encabezados blancos */
+}
+
+/* --- BARRA LATERAL (Sidebar) --- */
+.sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 250px; /* Ancho de la barra lateral */
+    padding: 20px;
+    background-color: #1E1E1E; /* Fondo de la barra (ligeramente más claro) */
+    border-right: 1px solid #333;
+    box-shadow: 2px 0px 10px rgba(0, 0, 0, 0.3);
+}
+
+.sidebar-header {
+    text-align: center;
+    font-size: 2.5rem;
+    font-weight: bold;
+    color: #00A6FF; /* Color acento moderno */
+    margin-bottom: 0.5rem;
+}
+
+.sidebar-divider {
+    border-top: 1px solid #444;
+    margin-bottom: 1.5rem;
+}
+
+/* Estilos de los links de navegación */
+.sidebar .nav-link {
+    color: #B0B0B0;
+    font-size: 1.1rem;
+    padding: 10px 15px;
+    margin-bottom: 5px;
+    border-radius: 8px;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.sidebar .nav-link:hover {
+    background-color: #2a2a2a;
+    color: #FFFFFF;
+}
+
+/* Link activo (página actual) */
+.sidebar .nav-link.active {
+    background-color: #00A6FF;
+    color: #FFFFFF;
+    font-weight: 500;
+}
+
+
+/* --- CONTENIDO PRINCIPAL (Content) --- */
+.content {
+    margin-left: 250px; /* Mismo ancho que la sidebar */
+    padding: 30px;
+    background-color: #111111;
+    min-height: 100vh;
+}
+
+.page-container {
+    padding-left: 15px;
+    padding-right: 15px;
+}
+
+/* --- TARJETAS (Cards) --- */
+
+/* Tarjetas para gráficos y datos */
+.data-card {
+    background-color: #1E1E1E !important;
+    border: 1px solid #333 !important;
+    border-radius: 12px; /* Esquinas más redondeadas */
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    /* height: 100%;  <-- ESTA LÍNEA FUE ELIMINADA */
+}
+
+/* Tarjetas para métricas (KPIs) */
+.metric-card {
+    background: linear-gradient(135deg, #1E1E1E 0%, #252525 100%);
+    border: 1px solid #333 !important;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    /* height: 100%;  <-- ESTA LÍNEA FUE ELIMINADA */
+}
+
+.metric-card .card-title,
+.data-card .card-title {
+    color: #E0E0E0;
+    font-weight: 500;
+    font-size: 1.1rem;
+}
+
+.metric-card .card-value {
+    font-size: 2.2rem;
+    font-weight: bold;
+    margin-top: 10px;
+    margin-bottom: 5px;
+}
+
+.metric-card .card-text-sm {
+    font-size: 0.85rem;
+    color: #888;
+}
+
+/* --- Metas (Goals) en el Dashboard --- */
+.goal-label {
+    font-size: 0.9rem;
+    color: #C0C0C0;
+    margin-bottom: 4px;
+}
+
+.goal-progress .progress-bar {
+    font-weight: 600;
+}
