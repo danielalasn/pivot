@@ -6,9 +6,9 @@ import dash_bootstrap_components as dbc
 from app import app, server
 
 # Importar los layouts de las páginas
-from pages import dashboard, transactions
+from pages import dashboard, transactions, debts
 from pages.accounts import accounts 
-
+from pages.investments import investments # Importar
 # ------------------------------------------------------------------------------
 # LAYOUT PRINCIPAL Y NAVEGACIÓN
 # ------------------------------------------------------------------------------
@@ -26,6 +26,7 @@ sidebar = html.Div(
                 dbc.NavLink([html.I(className="bi bi-house me-2"), "Dashboard"], href="/", active="exact"),
                 dbc.NavLink([html.I(className="bi bi-receipt me-2"), "Transacciones"], href="/transacciones", active="exact"),
                 dbc.NavLink([html.I(className="bi bi-wallet2 me-2"), "Cuentas"], href="/cuentas", active="exact"),
+                dbc.NavLink([html.I(className="bi bi-arrow-left-right me-2"), "Deudas y Cobros"], href="/deudas", active="exact"), 
                 dbc.NavLink([html.I(className="bi bi-bullseye me-2"), "Metas"], href="/metas", active="exact"),
                 dbc.NavLink([html.I(className="bi bi-graph-up me-2"), "Inversiones"], href="/inversiones", active="exact"),
                 dbc.NavLink([html.I(className="bi bi-lightbulb me-2"), "Consejos"], href="/consejos", active="exact"),
@@ -97,12 +98,13 @@ def display_page(pathname):
         return transactions.layout
     elif pathname == "/cuentas":
         return accounts.layout
+    # AÑADIR ESTA NUEVA RUTA
+    elif pathname == "/deudas":
+        return debts.layout
     elif pathname == "/metas":
         return html.P("Página de Metas (en construcción)")
     elif pathname == "/inversiones":
-        return html.P("Página de Inversiones (en construcción)")
-    elif pathname == "/consejos":
-        return html.P("Página de Consejos (en construcción)")
+        return investments.layout
     
     return dbc.Container(
         [

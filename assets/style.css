@@ -1,126 +1,253 @@
 /* -----------------------------------------------------------------------------
- * ESTILOS PERSONALIZADOS - PÍVOT (TEMA OSCURO MODERNO)
+ * SISTEMA DE TEMAS - VARIABLES CSS (SOLO COLORES)
  * -------------------------------------------------------------------------- */
 
-/* --- FUENTE PRINCIPAL --- */
+:root {
+    /* --- TEMA OSCURO (CYBORG DEFAULT) --- */
+    /* Estos valores coinciden con el look and feel de Cyborg */
+    --bg-body: #060606; 
+    --bg-sidebar: #060606;
+    --bg-card: #282828; /* Fondo de cards en Cyborg */
+    --bg-card-hover: #333333;
+    
+    --text-main: #adafae;
+    --text-header: #FFFFFF;
+    --text-muted: #888888;
+    
+    --border-color: #282828;
+    --divider-color: #444444;
+    
+    /* Inputs oscuros */
+    --input-bg: #111; 
+    --input-text: #fff;
+    --input-border: #444;
+
+    --shadow: rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="light"] {
+    /* --- TEMA CLARO --- */
+    /* Colores claros que reemplazan SOLO el color, no la forma */
+    --bg-body: #F4F6F8;
+    --bg-sidebar: #FFFFFF;
+    --bg-card: #FFFFFF;
+    --bg-card-hover: #F8F9FA;
+    
+    --text-main: #212529; /* Color de texto estándar Bootstrap */
+    --text-header: #111111;
+    --text-muted: #6c757d;
+    
+    --border-color: #DEE2E6; /* Borde estándar Bootstrap */
+    --divider-color: #DEE2E6;
+    
+    /* Inputs claros */
+    --input-bg: #FFFFFF;
+    --input-text: #495057;
+    --input-border: #CED4DA;
+
+    --shadow: rgba(0, 0, 0, 0.1);
+}
+
+/* -----------------------------------------------------------------------------
+ * ESTILOS APLICADOS - SOLO COLORES (!important para sobreescribir Cyborg)
+ * -------------------------------------------------------------------------- */
+
 body, html {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
-    background-color: #111111 !important; /* Fondo principal muy oscuro */
-    color: #E0E0E0 !important; /* Texto principal claro */
+    background-color: var(--bg-body) !important;
+    color: var(--text-main) !important;
+    transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 h1, h2, h3, h4, h5, h6 {
-    color: #FFFFFF; /* Encabezados blancos */
+    color: var(--text-header) !important;
 }
 
-/* --- BARRA LATERAL (Sidebar) --- */
+/* --- BARRA LATERAL --- */
 .sidebar {
     position: fixed;
     top: 0;
     left: 0;
     bottom: 0;
-    width: 250px; /* Ancho de la barra lateral */
+    width: 250px;
     padding: 20px;
-    background-color: #1E1E1E; /* Fondo de la barra (ligeramente más claro) */
-    border-right: 1px solid #333;
-    box-shadow: 2px 0px 10px rgba(0, 0, 0, 0.3);
+    background-color: var(--bg-sidebar) !important;
+    border-right: 1px solid var(--border-color) !important;
+    box-shadow: 2px 0px 10px var(--shadow);
+    transition: background-color 0.3s ease, border-color 0.3s ease;
+    z-index: 100;
 }
 
 .sidebar-header {
-    text-align: center;
-    font-size: 2.5rem;
-    font-weight: bold;
-    color: #00A6FF; /* Color acento moderno */
-    margin-bottom: 0.5rem;
+    color: #2A9FD6 !important; /* Azul Cyborg original */
 }
 
-.sidebar-divider {
-    border-top: 1px solid #444;
-    margin-bottom: 1.5rem;
-}
-
-/* Estilos de los links de navegación */
 .sidebar .nav-link {
-    color: #B0B0B0;
-    font-size: 1.1rem;
-    padding: 10px 15px;
-    margin-bottom: 5px;
-    border-radius: 8px;
-    transition: background-color 0.2s, color 0.2s;
+    color: var(--text-muted) !important;
 }
 
 .sidebar .nav-link:hover {
-    background-color: #2a2a2a;
-    color: #FFFFFF;
+    background-color: var(--bg-card-hover) !important;
+    color: var(--text-header) !important;
 }
 
-/* Link activo (página actual) */
 .sidebar .nav-link.active {
-    background-color: #00A6FF;
-    color: #FFFFFF;
-    font-weight: 500;
+    background-color: #2A9FD6 !important; /* Azul Cyborg */
+    color: #FFFFFF !important;
 }
 
-
-/* --- CONTENIDO PRINCIPAL (Content) --- */
+/* --- CONTENIDO --- */
 .content {
-    margin-left: 250px; /* Mismo ancho que la sidebar */
+    margin-left: 250px;
     padding: 30px;
-    background-color: #111111;
+    background-color: var(--bg-body) !important;
     min-height: 100vh;
+    transition: background-color 0.3s ease;
 }
 
-.page-container {
-    padding-left: 15px;
-    padding-right: 15px;
+/* --- TARJETAS --- */
+.card, .data-card, .metric-card {
+    background-color: var(--bg-card) !important;
+    border: 1px solid var(--border-color) !important;
+    box-shadow: 0 4px 12px var(--shadow);
+    color: var(--text-main) !important;
 }
 
-/* --- TARJETAS (Cards) --- */
-
-/* Tarjetas para gráficos y datos */
-.data-card {
-    background-color: #1E1E1E !important;
-    border: 1px solid #333 !important;
-    border-radius: 12px; /* Esquinas más redondeadas */
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-    /* height: 100%;  <-- ESTA LÍNEA FUE ELIMINADA */
+/* --- INPUTS (Crucial para que se vean bien en blanco) --- */
+.form-control, .form-select {
+    background-color: var(--input-bg) !important;
+    border-color: var(--input-border) !important;
+    color: var(--input-text) !important;
 }
 
-/* Tarjetas para métricas (KPIs) */
-.metric-card {
-    background: linear-gradient(135deg, #1E1E1E 0%, #252525 100%);
-    border: 1px solid #333 !important;
-    border-radius: 12px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-    /* height: 100%;  <-- ESTA LÍNEA FUE ELIMINADA */
+.form-control::placeholder {
+    color: var(--text-muted) !important;
+    opacity: 0.7;
 }
 
-.metric-card .card-title,
-.data-card .card-title {
-    color: #E0E0E0;
-    font-weight: 500;
-    font-size: 1.1rem;
+/* --- MODALES --- */
+.modal-content {
+    background-color: var(--bg-card) !important;
+    color: var(--text-main) !important;
+    border: 1px solid var(--border-color) !important;
 }
 
-.metric-card .card-value {
-    font-size: 2.2rem;
-    font-weight: bold;
-    margin-top: 10px;
-    margin-bottom: 5px;
+.modal-header, .modal-footer {
+    border-color: var(--divider-color) !important;
 }
 
-.metric-card .card-text-sm {
-    font-size: 0.85rem;
-    color: #888;
+.modal-title {
+    color: var(--text-header) !important;
 }
 
-/* --- Metas (Goals) en el Dashboard --- */
-.goal-label {
-    font-size: 0.9rem;
-    color: #C0C0C0;
-    margin-bottom: 4px;
+.btn-close {
+    /* Truco para invertir el color de la X de cerrar en modo oscuro */
+    filter: var(--close-icon-filter, none); 
 }
 
-.goal-progress .progress-bar {
-    font-weight: 600;
+[data-theme="light"] .btn-close {
+    filter: none !important;
 }
+
+/* En modo oscuro por defecto (Cyborg), la X ya es blanca, no necesitamos tocarla mucho 
+   a menos que bootstrap la cambie. Cyborg la maneja bien. */
+
+/* --- TEXTOS --- */
+.text-muted { color: var(--text-muted) !important; }
+.text-info { color: #17a2b8 !important; }
+.text-success { color: #28a745 !important; }
+.text-danger { color: #dc3545 !important; }
+.text-warning { color: #ffc107 !important; }
+
+/* Corrección para tablas en modo claro */
+[data-theme="light"] .dash-spreadsheet-container .dash-spreadsheet-inner th,
+[data-theme="light"] .dash-spreadsheet-container .dash-spreadsheet-inner td {
+    background-color: #FFFFFF !important;
+    color: #333333 !important;
+    border-color: #DEE2E6 !important;
+}
+
+/* -----------------------------------------------------------------------------
+ * ESTILOS MODERNOS PARA SCROLLBAR (AÑADIR A style.css)
+ * -------------------------------------------------------------------------- */
+
+/* style.css */
+
+/* 1. Oculta y estiliza el SCROLLBAR para las listas de tarjetas y modales */
+#deb-cards-container::-webkit-scrollbar,
+#cred-cards-container::-webkit-scrollbar,
+#trans-modal-body::-webkit-scrollbar,
+#cred-modal-body::-webkit-scrollbar { /* <--- AGREGADO ESTE ID */
+    width: 6px; 
+    background-color: transparent; 
+}
+
+/* 2. Estiliza el THUMB (la barra que se arrastra) */
+#deb-cards-container::-webkit-scrollbar-thumb,
+#cred-cards-container::-webkit-scrollbar-thumb,
+#trans-modal-body::-webkit-scrollbar-thumb,
+#cred-modal-body::-webkit-scrollbar-thumb { /* <--- AGREGADO ESTE ID */
+    background-color: #666;
+    border-radius: 3px;
+    visibility: hidden;
+}
+
+/* 3. Muestra el THUMB solo cuando el ratón está sobre el contenedor */
+#deb-cards-container:hover::-webkit-scrollbar-thumb,
+#cred-cards-container:hover::-webkit-scrollbar-thumb,
+#trans-modal-body:hover::-webkit-scrollbar-thumb,
+#cred-modal-body:hover::-webkit-scrollbar-thumb { /* <--- AGREGADO ESTE ID */
+    visibility: visible;
+}
+
+/* 4. Solución Firefox */
+#deb-cards-container,
+#cred-cards-container,
+#trans-modal-body,
+#cred-modal-body { /* <--- AGREGADO ESTE ID */
+    scrollbar-width: thin;
+    scrollbar-color: #666 transparent;
+}
+
+/* -----------------------------------------------------------------------------
+ * FIX DROPDOWNS (SOLUCIÓN REFORZADA)
+ * -------------------------------------------------------------------------- */
+
+/* 1. Forzar que el menú flote por encima de todo y se ajuste al ancho */
+.Select-menu-outer {
+    display: block !important;
+    z-index: 9999 !important; /* Asegura que esté encima de todo */
+    min-width: 100% !important;
+    width: auto !important; /* Permite que se ensanche si el texto es largo */
+    background-color: #2A2A2A !important; /* Fondo oscuro sólido */
+    border: 1px solid #444 !important;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.5) !important;
+}
+
+/* 2. Evitar que el texto se rompa en varias líneas (causa del overlap) */
+.Select-option {
+    white-space: nowrap !important; /* OBLIGATORIO: Una sola línea */
+    overflow: hidden !important;
+    text-overflow: ellipsis !important; /* Pone "..." si es muy largo */
+    height: 38px !important; /* Altura fija para evitar colisiones */
+    line-height: 28px !important; /* Centrado vertical */
+    padding: 5px 10px !important;
+    background-color: #2A2A2A !important;
+    color: #E0E0E0 !important;
+}
+
+/* 3. Color al pasar el mouse por encima */
+.Select-option.is-focused {
+    background-color: #444 !important;
+    color: #fff !important;
+}
+
+/* Añadir #stock-modal-body a los selectores existentes */
+#deb-cards-container::-webkit-scrollbar,
+#cred-cards-container::-webkit-scrollbar,
+#trans-modal-body::-webkit-scrollbar,
+#cred-modal-body::-webkit-scrollbar,
+#stock-modal-body::-webkit-scrollbar { /* <--- NUEVO */
+    width: 6px; 
+    background-color: transparent; 
+}
+/* (Repetir para las reglas de thumb y hover como hiciste antes) */
