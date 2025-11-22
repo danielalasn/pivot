@@ -77,21 +77,6 @@ h1, h2, h3, h4, h5, h6 {
     color: var(--text-muted) !important;
     opacity: 0.8;
 }
-.Select-value-label,
-.Select-input {
-    color: var(--input-text) !important; /* Fuerza el color blanco/claro */
-}
-
-/* 2. FIX PLACEHOLDER */
-.Select-placeholder {
-    color: var(--text-muted) !important; /* Mantiene un gris visible */
-}
-
-/* 3. FIX COLOR DEL ÍCONO (Flecha del Dropdown) */
-.Select-arrow {
-    border-color: #fff transparent transparent transparent !important; /* Hace la flecha blanca/visible */
-}
-
 
 /* --- TEXTOS Y COLORES --- */
 .text-muted { color: var(--text-muted) !important; }
@@ -222,6 +207,7 @@ h1, h2, h3, h4, h5, h6 {
     border-radius: 4px;
 }
 
+/* 6. FIX DROPDOWNS (Importante para que se muestren correctamente) */
 .Select-menu-outer {
     z-index: 9999 !important;
     background-color: #2a2a2a !important;
@@ -235,24 +221,4 @@ h1, h2, h3, h4, h5, h6 {
 }
 .Select-option.is-focused {
     background-color: #444 !important;
-}
-
-/* Aumentamos la especificidad combinando clases: .data-card.bg-heatmap-... */
-.data-card.bg-heatmap-positive {
-    background-color: #1a3a1f !important; 
-    border-color: #28aa32 !important;
-    transition: background-color 0.3s ease; /* Suaviza el cambio */
-}
-
-.data-card.bg-heatmap-negative {
-    background-color: #3d1b1f !important; 
-    border-color: #aa2828 !important;
-    transition: background-color 0.3s ease;
-}
-
-/* Efecto hover para estas tarjetas específicas */
-.data-card.bg-heatmap-positive:hover, 
-.data-card.bg-heatmap-negative:hover {
-    filter: brightness(1.2); /* Ilumina un poco al pasar el mouse */
-    transform: translateY(-3px);
 }

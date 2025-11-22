@@ -1,0 +1,203 @@
+/* -----------------------------------------------------------------------------
+ * SISTEMA DE TEMAS - VARIABLES CSS (SOLO COLORES DEL MODO CLARO)
+ * -------------------------------------------------------------------------- */
+
+:root {
+    /* --- LIGHT MODE MODERN (FOCUS ON WHITE SPACE AND SOFT SHADOWS) --- */
+    --bg-body: #F7F7F7;     /* Fondo de la página: Gris muy claro / Casi blanco */
+    --bg-sidebar: #FFFFFF;  /* Fondo del Offcanvas/Sidebar: Blanco puro */
+    --bg-card: #FFFFFF;     /* Fondo de cards: Blanco puro */
+    --bg-card-hover: #EEEEEE; /* Gris muy claro para hover */
+    
+    --text-main: #333333;   /* Texto principal: Negro suave */
+    --text-header: #111111;
+    --text-muted: #6c757d;  /* Gris de Bootstrap para texto secundario */
+    
+    --border-color: #DDDDDD; /* Borde sutil */
+    --divider-color: #EEEEEE; /* Líneas divisorias muy claras */
+    
+    /* Inputs y Dropdowns */
+    --input-bg: #FFFFFF; 
+    --input-text: #495057;
+    --input-border: #CED4DA;
+
+    --shadow: rgba(0, 0, 0, 0.15); /* Sombra suave y ligera */
+    
+    /* Colores primarios de la app (Azul y Verde para resaltar) */
+    --primary-color: #007bff; /* Azul primario de Bootstrap (para links, etc.) */
+    --success-color: #28a745; 
+    --danger-color: #dc3545;
+}
+
+/* -----------------------------------------------------------------------------
+ * ESTILOS GLOBALES BASE
+ * -------------------------------------------------------------------------- */
+
+body, html {
+    background-color: var(--bg-body) !important;
+    color: var(--text-main) !important;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    color: var(--text-header) !important;
+}
+
+/* --- CONTENIDO PRINCIPAL (main-content) --- */
+.main-content {
+    /* Ajuste de margen para el Navbar fijo */
+    padding-top: 75px; 
+    padding-left: 30px; 
+    padding-right: 30px;
+    min-height: 100vh;
+}
+
+/* --- TARJETAS (Efecto flotante y bordes redondeados) --- */
+.card, .data-card, .metric-card {
+    background-color: var(--bg-card) !important;
+    border: 1px solid var(--border-color) !important;
+    box-shadow: 0 4px 8px var(--shadow) !important; /* Sombra más sutil */
+    color: var(--text-main) !important;
+    border-radius: 12px;
+}
+.zoom-on-hover:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 20px var(--shadow) !important;
+    transition: all 0.3s ease;
+}
+
+/* --- INPUTS Y DROPDOWNS --- */
+.form-control, .form-select, .Select-control, .Select-input {
+    background-color: var(--input-bg) !important;
+    border-color: var(--input-border) !important;
+    color: var(--input-text) !important;
+    border-radius: 8px !important;
+}
+.form-control::placeholder {
+    color: var(--text-muted) !important;
+    opacity: 0.8;
+}
+
+/* --- TEXTOS Y COLORES --- */
+.text-muted { color: var(--text-muted) !important; }
+.text-info { color: var(--primary-color) !important; }
+.text-success { color: var(--success-color) !important; }
+.text-danger { color: var(--danger-color) !important; }
+.text-warning { color: #ff9800 !important; } 
+
+
+/* -----------------------------------------------------------------------------
+ * ESTILOS DE COMPONENTES ÚNICOS
+ * -------------------------------------------------------------------------- */
+
+/* 1. NAVBAR (Header) - CLARO Y LIMPIO */
+#main-navbar {
+    /* Fondo limpio y blanco */
+    background: #FFFFFF !important; 
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1) !important; 
+    border-bottom: 1px solid var(--border-color); 
+    padding-top: 5px !important;
+    padding-bottom: 5px !important;
+}
+
+/* Estilo del título 'Pívot' (Color oscuro) */
+#main-navbar .navbar-brand.text-white {
+    color: var(--text-header) !important; 
+    font-size: 1.5rem !important; 
+    font-weight: 500 !important;
+}
+
+/* Ícono de hamburguesa (Color oscuro) */
+#open-offcanvas-btn i {
+    color: var(--text-header) !important; 
+}
+
+
+/* 2. OFFCANVAS/SIDEBAR */
+.offcanvas-custom {
+    background-color: var(--bg-sidebar) !important; 
+    color: var(--text-main) !important;
+    box-shadow: 4px 0 10px rgba(0, 0, 0, 0.1) !important;
+    width: 280px !important; 
+}
+.offcanvas-custom .offcanvas-header {
+    background-color: var(--bg-sidebar) !important;
+    border-bottom: 1px solid var(--divider-color) !important;
+}
+/* Asegurar que la X de cerrar sea visible (No se necesita filtro) */
+.offcanvas-custom .btn-close {
+    opacity: 0.7;
+}
+
+/* 3. NAVEGACIÓN EN OFFCANVAS */
+.offcanvas-custom .nav-link {
+    color: var(--text-main) !important; 
+    border-radius: 8px;
+    padding: 12px 15px;
+    margin: 5px 0;
+    transition: background-color 0.2s ease;
+}
+.offcanvas-custom .nav-link:hover {
+    background-color: var(--bg-card-hover) !important;
+    color: var(--primary-color) !important;
+}
+.offcanvas-custom .nav-link.active {
+    background-color: var(--primary-color) !important;
+    color: white !important;
+    font-weight: bold;
+}
+.offcanvas-custom .nav-link.active i {
+    color: white !important;
+}
+.offcanvas-custom .sidebar-divider {
+    border-top: 1px solid var(--divider-color) !important;
+    opacity: 1;
+}
+/* Visibilidad del label del switch de tema (en este modo no es necesario, pero por si acaso) */
+.offcanvas-custom label {
+    color: var(--text-muted) !important;
+}
+
+/* 4. TABLAS (Dash DataTable) - Alto Contraste */
+.dash-spreadsheet-container {
+    border-radius: 10px;
+    border: 1px solid var(--input-border) !important;
+    background-color: var(--bg-card) !important;
+}
+.dash-header {
+    background-color: #F0F0F0 !important; /* Gris muy claro */
+    color: var(--text-header) !important;
+    font-weight: bold;
+    border-top: 1px solid var(--divider-color) !important;
+}
+.dash-header, .dash-cell {
+    border: 1px solid var(--divider-color) !important;
+}
+.dash-cell {
+    background-color: var(--bg-card) !important;
+    color: var(--text-main) !important;
+}
+
+/* --- SCROLLBARS Y DROPDOWNS (Mantener) --- */
+::-webkit-scrollbar {
+    width: 8px; 
+    background-color: transparent; 
+}
+::-webkit-scrollbar-thumb {
+    background-color: #CCC; /* Más claro para el modo light */
+    border-radius: 4px;
+}
+.Select-menu-outer {
+    z-index: 9999 !important;
+    background-color: var(--bg-card) !important;
+    border: 1px solid var(--input-border) !important;
+    box-shadow: 0 5px 15px var(--shadow) !important;
+}
+.Select-option {
+    white-space: nowrap !important;
+    color: var(--text-main) !important;
+    background-color: var(--bg-card) !important;
+}
+.Select-option.is-focused {
+    background-color: var(--bg-card-hover) !important;
+}

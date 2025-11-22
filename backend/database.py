@@ -13,6 +13,10 @@ def ensure_db_structure():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
+    try:
+        cursor.execute("ALTER TABLE investments ADD COLUMN total_investment REAL DEFAULT 0.0;")
+        print("Migración: Columna 'total_investment' agregada a investments.")
+    except: pass
     # 1. Cuentas
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS accounts (
@@ -93,6 +97,48 @@ def ensure_db_structure():
         cursor.execute("ALTER TABLE investments ADD COLUMN display_order INTEGER DEFAULT 0;")
         print("Migración: Columna 'display_order' agregada a investments.")
     except: pass 
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS history_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        net_worth REAL NOT NULL,
+        difference REAL DEFAULT 0.0,
+        period_type TEXT
+    );
+    """)
+
+# 🚨 NUEVA TABLA CONSOLIDADA para COMPRAS y VENTAS
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS investment_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        ticker TEXT NOT NULL,
+        type TEXT NOT NULL,          -- 'BUY' o 'SELL'
+        shares REAL NOT NULL,        -- Cantidad de unidades
+        price REAL NOT NULL,         -- Precio de ejecución (por unidad)
+        total_transaction REAL NOT NULL, -- shares * price
+        avg_cost_at_trade REAL DEFAULT 0.0, -- Costo promedio en el momento del trade (solo para cálculo de P/L en VENTA)
+        realized_pl REAL DEFAULT 0.0 -- P/L Realizado (SOLO EN VENTAS)
+    );
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pl_adjustments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            realized_pl REAL NOT NULL, -- Ganancia (positivo) o Pérdida (negativo)
+            description TEXT -- Para saber si fue ajuste manual
+        );
+        """)
+
+    # 🚨 LIMPIEZA: Eliminar la tabla antigua si existe
+    try:
+        cursor.execute("DROP TABLE IF EXISTS sales_history;")
+        print("Limpieza: Tabla 'sales_history' eliminada.")
+    except:
+        pass
 
     conn.commit()
     # ...

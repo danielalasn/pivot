@@ -4,6 +4,7 @@ import os
 from datetime import date, timedelta
 import calendar
 import finnhub # NUEVA LIBRERÍA
+import time
 
 from dotenv import load_dotenv # IMPORTAR ESTO
 
@@ -1024,72 +1025,58 @@ import yfinance as yf
 
 # --- GESTIÓN DE INVERSIONES (STOCKS) ---
 
+# backend/data_manager.py (MODIFICADO)
+
+# --- GESTIÓN DE INVERSIONES (STOCKS) ---
+
 def _get_price_finnhub(ticker_symbol, avg_price_fallback=0):
     """
-    Obtiene precio actual y cierre anterior usando Finnhub.
-    Retorna: (current_price, prev_close, company_name)
+    Obtiene precio actual, cierre anterior, nombre y sector usando Finnhub.
+    Retorna: (current_price, prev_close, company_name, sector)
     """
-    # Validación de seguridad extra
     if not finnhub_client:
-        return avg_price_fallback, avg_price_fallback, ticker_symbol
+        return avg_price_fallback, avg_price_fallback, ticker_symbol, 'N/A'
 
     clean_ticker = str(ticker_symbol).strip().upper()
     
     try:
-        # 1. Obtener Cotización (Quote)
-        # Retorna dict: {'c': Current, 'pc': Previous Close, 'dp': percent change, ...}
         quote = finnhub_client.quote(clean_ticker)
         
         current_price = float(quote['c'])
         prev_close = float(quote['pc'])
         
-        # Si la API devuelve 0 (ticker invalido), usamos fallback
         if current_price == 0:
-            return avg_price_fallback, avg_price_fallback, clean_ticker
+            return avg_price_fallback, avg_price_fallback, clean_ticker, 'N/A'
             
-        # 2. Intentamos obtener el nombre real (opcional, consume 1 llamada extra)
-        # Para optimizar y no gastar limites, podriamos omitirlo en la lista general
-        # Pero lo haremos aqui para mantener la calidad.
         name = clean_ticker
+        sector = 'N/A'
         try:
             profile = finnhub_client.company_profile2(symbol=clean_ticker)
-            if profile and 'name' in profile:
-                name = profile['name']
+            if profile:
+                if 'name' in profile:
+                    name = profile['name']
+                if 'finnhubIndustry' in profile:
+                    sector = profile['finnhubIndustry']
         except: pass
 
-        return current_price, prev_close, name
+        return current_price, prev_close, name, sector # <-- MODIFICADO RETURN
 
     except Exception as e:
         print(f"Error Finnhub para {clean_ticker}: {e}")
-        return avg_price_fallback, avg_price_fallback, clean_ticker
-
-
-def add_stock(ticker, shares, avg_price, asset_type="Stock", account_id=None):
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT MAX(display_order) FROM investments")
-        res = cursor.fetchone()
-        max_order = res[0] if res[0] is not None else 0
-        
-        clean_ticker = str(ticker).replace('$', '').strip().upper()
-        
-        cursor.execute("""
-            INSERT INTO investments (ticker, shares, avg_price, asset_type, account_id, display_order)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (clean_ticker, shares, avg_price, asset_type, account_id, max_order + 1))
-        conn.commit()
-        return True, f"Ticker {clean_ticker} agregado."
-    except Exception as e: return False, str(e)
-    finally: conn.close()
+        return avg_price_fallback, avg_price_fallback, clean_ticker, 'N/A'
 
 
 def get_stocks_data():
-    """Lista principal de stocks para las cards."""
+    """
+    Recupera todas las posiciones de inversión, obtiene precios en vivo de la API,
+    y clasifica cada activo como STOCK, ETF, o CRYPTO_FOREX para el caché del frontend.
+    """
     conn = get_connection()
     try:
-        df = pd.read_sql_query("SELECT * FROM investments WHERE asset_type = 'Stock' ORDER BY display_order ASC", conn)
-        if df.empty: return []
+        # Recuperamos TODAS las posiciones de la tabla investments
+        df = pd.read_sql_query("SELECT * FROM investments ORDER BY display_order ASC", conn)
+        if df.empty: 
+            return []
         
         stocks_list = []
         for _, row in df.iterrows():
@@ -1097,10 +1084,10 @@ def get_stocks_data():
             shares = row['shares']
             avg_price = row['avg_price']
             
-            # USAMOS FINNHUB
-            current_price, prev_close, name = _get_price_finnhub(ticker, avg_price)
+            # 1. LLAMADA API: Obtener datos en vivo y clasificación
+            current_price, prev_close, name, sector = _get_price_finnhub(ticker, avg_price)
             
-            # Cálculos
+            # --- 2. CÁLCULO DE MÉTRICAS ---
             market_value = current_price * shares
             total_cost = avg_price * shares
             total_gain = market_value - total_cost
@@ -1110,6 +1097,38 @@ def get_stocks_data():
             if prev_close > 0:
                 day_change_pct = ((current_price - prev_close) / prev_close) * 100
 
+            # --- 3. CLASIFICACIÓN FINAL DE ASSET_TYPE (Para la pestaña del frontend) ---
+            asset_type_db = row['asset_type']
+            final_asset_type = asset_type_db 
+            
+            # Regla A: Clasificación basada en el sector de Finnhub
+            if sector in ['Exchange Traded Fund', 'Fund']:
+                 final_asset_type = 'ETF'
+            
+            # Regla B: Chequeo manual para ETFs comunes
+            elif ticker in ['SPY', 'QQQ', 'VOO', 'VT', 'BND', 'VTI', 'QTUM']: 
+                 final_asset_type = 'ETF'
+                 
+            # Regla C: Clasificación CRYPTO/FOREX (Patrón de pares)
+            elif 'USD' in ticker.upper() or 'USDT' in ticker.upper() or '/' in ticker:
+                 final_asset_type = 'CRYPTO_FOREX'
+                 
+            # Regla D: Mantenemos el valor original de la BD si ya está clasificado
+            elif asset_type_db == 'ETF':
+                 final_asset_type = 'ETF'
+            # (Si no coincide con nada, se asume 'Stock' por defecto de la BD)
+
+            # --- 4. AJUSTE DEL CAMPO 'sector' (Para el gráfico de pastel) ---
+            # Si clasificamos el activo como ETF o Crypto, sobreescribimos el sector para el gráfico.
+            if final_asset_type == 'ETF':
+                sector = 'Fondos (ETF)'
+            elif final_asset_type == 'CRYPTO_FOREX':
+                sector = 'Cripto/Forex'
+            elif sector == 'N/A' or sector == '':
+                # Si es un Stock pero el sector no se encontró, lo etiquetamos
+                sector = 'Sin Clasificar' 
+
+            # 5. CONSTRUCCIÓN DE LA LISTA DE STOCKS PARA EL CACHÉ
             stocks_list.append({
                 'id': row['id'],
                 'ticker': ticker,
@@ -1120,23 +1139,158 @@ def get_stocks_data():
                 'market_value': market_value,
                 'total_gain': total_gain,
                 'total_gain_pct': total_gain_pct,
-                'day_change_pct': day_change_pct
+                'day_change_pct': day_change_pct,
+                'sector': sector,           # <-- Usado para el gráfico de pastel (limpio)
+                'asset_type': final_asset_type  # <-- Usado para el filtro de pestañas
             })
             
         return stocks_list
+    
     except Exception as e:
-        print(f"Error stocks list: {e}")
+        print(f"Error al obtener datos de stocks: {e}")
         return []
+        
     finally:
         conn.close()
 
+# backend/data_manager.py (NUEVA FUNCIÓN)
+
+def get_asset_type_breakdown(stocks_list):
+    """Returns data for a pie chart broken down by the primary asset type (Stock, ETF, Crypto, Other)."""
+    stocks = stocks_list
+    
+    if not stocks:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame(stocks)
+    
+    # Mapeamos el 'asset_type' final a un nombre legible para el gráfico
+    df['Display_Type'] = df['asset_type'].apply(lambda x: 
+        'Fondos (ETF)' if x == 'ETF' else (
+        'Cripto/Forex' if x == 'CRYPTO_FOREX' else (
+        'Acciones (Stocks)' if x == 'Stock' else 'Otros Activos'))
+    )
+
+    df_asset_type = df.groupby('Display_Type')['market_value'].sum().reset_index().rename(columns={'Display_Type': 'name', 'market_value': 'value'})
+    
+    return df_asset_type
+# backend/data_manager.py (MODIFICADO para aceptar la lista de stocks)
+
+# backend/data_manager.py (MODIFICADO para garantizar el retorno de todas las claves)
+
+# backend/data_manager.py (MODIFICADO para garantizar el retorno de todas las claves)
+
+def get_portfolio_summary_data(stocks_list): 
+    """Calculates overall portfolio metrics: total value, day change, total gain."""
+    stocks = stocks_list
+    
+    # Base dictionary guaranteed to be returned, initialized to 0.0
+    result = {
+        'market_value': 0.0, 'day_gain_usd': 0.0, 
+        'day_pct': 0.0,         # <-- Usar la clave corta
+        'total_gain_usd': 0.0, 
+        'total_pct': 0.0
+    }
+    
+    if not stocks:
+        return result
+        
+    total_market_value = 0.0
+    total_day_gain = 0.0
+    total_total_gain = 0.0
+    total_total_cost = 0.0
+    
+    try:
+        for s in stocks:
+            total_market_value += s['market_value']
+            total_total_gain += s['total_gain']
+            total_total_cost += s['avg_price'] * s['shares']
+            
+            day_change_pct = s['day_change_pct']
+            
+            # Calculate Day Gain in USD
+            if (1 + day_change_pct/100) != 0:
+                prev_val = s['market_value'] / (1 + day_change_pct/100)
+                day_gain_usd = s['market_value'] - prev_val
+                total_day_gain += day_gain_usd
+        
+        # Calculate Total Percentage Metrics
+        prev_close_value = total_market_value - total_day_gain
+        day_gain_pct = (total_day_gain / prev_close_value * 100) if prev_close_value != 0 else 0
+        total_gain_pct = (total_total_gain / total_total_cost * 100) if total_total_cost != 0 else 0
+
+        # Assign results back to the dictionary
+        result['market_value'] = total_market_value
+        result['day_gain_usd'] = total_day_gain
+        result['day_pct'] = day_gain_pct     # <-- Asignar al nombre corto
+        result['total_gain_usd'] = total_total_gain
+        result['total_pct'] = total_gain_pct
+        
+    except Exception as e:
+        # If any error occurs during processing (e.g., data type error), 
+        # log it and return the default zeroed dictionary.
+        print(f"Error processing portfolio summary data: {e}")
+        
+    return result
+
+
+
+def get_portfolio_breakdown(stocks_list): # <-- ACEPTA LA LISTA DE CACHÉ
+    """Returns data for pie charts: per stock and per industry."""
+    stocks = stocks_list # Usa la lista pasada por el Store/Cache
+    
+    if not stocks:
+        return pd.DataFrame(), pd.DataFrame() # Empty DFs
+    
+    df = pd.DataFrame(stocks)
+    
+    # 1. Breakdown by Stock
+    df_stock = df[['ticker', 'market_value']].rename(columns={'ticker': 'name', 'market_value': 'value'})
+    
+    # 2. Breakdown by Industry (Sector)
+    # Rellenamos 'N/A' si el sector no se pudo obtener, para que no falle el groupby
+    df['sector'] = df['sector'].fillna('Sin Sector') 
+    df_industry = df.groupby('sector')['market_value'].sum().reset_index().rename(columns={'sector': 'name', 'market_value': 'value'})
+    
+    return df_stock, df_industry
+
+
+# backend/data_manager.py (Función add_stock MODIFICADA)
+
+# La función debe aceptar total_investment como argumento
+def add_stock(ticker, shares, total_investment, asset_type="Stock", account_id=None):
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # 1. CÁLCULO CRÍTICO: avg_price = Inversión Total / Unidades
+    avg_price = total_investment / shares if shares > 0 else 0.0
+    
+    try:
+        cursor.execute("SELECT MAX(display_order) FROM investments")
+        res = cursor.fetchone()
+        max_order = res[0] if res[0] is not None else 0
+        new_order = max_order + 1
+
+        # 2. INSERTAR AMBOS VALORES (total_investment debe ser la nueva columna en la DB)
+        # Nota: La lista de columnas INSERT debe coincidir con la lista de valores
+        cursor.execute("""
+            INSERT INTO investments (ticker, shares, avg_price, total_investment, asset_type, account_id, display_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (ticker, shares, avg_price, total_investment, asset_type, account_id, new_order))
+        
+        conn.commit()
+        return True, f"Ticker {ticker} agregado. Costo Promedio: ${avg_price:,.2f}"
+    except Exception as e:
+        return False, f"Error al crear: {str(e)}"
+    finally:
+        conn.close()
 
 # backend/data_manager.py
 
 # backend/data_manager.py - Reemplazar la función get_investment_detail
 
 def get_investment_detail(inv_id):
-    """Detalle completo para el Modal usando Finnhub (Quote + Perfil + Métricas + Noticias/Sentimiento)."""
+    """Detalle completo para el Modal usando Finnhub (Quote + Perfil + Métricas + Noticias)."""
     conn = get_connection()
     try:
         row = pd.read_sql_query("SELECT * FROM investments WHERE id = ?", conn, params=(inv_id,))
@@ -1180,9 +1334,8 @@ def get_investment_detail(inv_id):
                 metrics = basic_fins['metric']
         except: pass
         
-        # 4. OBTENER NOTICIAS Y SENTIMIENTO (NUEVO)
+        # 4. OBTENER NOTICIAS (NUEVO)
         news_list = []
-        sentiment = {}
         if finnhub_client:
             try:
                 # Noticias (últimos 7 días, limitamos a 5 items para no saturar el modal)
@@ -1200,25 +1353,6 @@ def get_investment_detail(inv_id):
                 
             except Exception as e:
                 print(f"Error fetching news for {clean_ticker}: {e}")
-                
-            try:
-                # Sentimiento Insider (transacciones de compra/venta de insiders)
-                insider_sentiment = finnhub_client.insider_sentiment(clean_ticker, _from=last_week, to=today)
-                if insider_sentiment and 'data' in insider_sentiment:
-                    data_points = insider_sentiment['data']
-                    if data_points:
-                        # Calculamos promedio de las métricas clave
-                        avg_buy_sell_ratio = sum(d['netBuySellRatio'] for d in data_points) / len(data_points)
-                        avg_buy_ratio = sum(d['buyRatio'] for d in data_points) / len(data_points)
-                        
-                        sentiment = {
-                            'month_data_count': len(data_points),
-                            'avg_net_buy_sell_ratio': avg_buy_sell_ratio,
-                            'avg_buy_ratio': avg_buy_ratio
-                        }
-
-            except Exception as e:
-                print(f"Error fetching sentiment for {clean_ticker}: {e}")
 
 
         # Cálculos de Posición
@@ -1252,7 +1386,7 @@ def get_investment_detail(inv_id):
 
             # NUEVOS DATOS
             'news': news_list,
-            'sentiment': sentiment,
+
             
             # Tu Posición
             'shares': shares,
@@ -1269,6 +1403,34 @@ def get_investment_detail(inv_id):
     finally:
         conn.close()
 
+
+# backend/data_manager.py (Función update_investment - CORREGIDA)
+
+def update_investment(inv_id, new_shares, new_total_investment):
+    """Actualiza las shares y el total_investment, recalculando el avg_price."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # 1. CÁLCULO CRÍTICO: El nuevo costo promedio se calcula directamente con la nueva inversión total
+    new_avg_price = new_total_investment / new_shares if new_shares > 0 else 0.0
+    
+    try:
+        # 2. Actualizar la DB con los 3 valores proporcionados por el usuario/cálculo
+        cursor.execute("""
+            UPDATE investments 
+            SET shares = ?, total_investment = ?, avg_price = ?
+            WHERE id = ?
+        """, (new_shares, new_total_investment, new_avg_price, inv_id))
+        
+        conn.commit()
+        # 🚨 MENSAJE CORREGIDO: Devolver el nuevo costo promedio para confirmar el cambio.
+        return True, f"Posición actualizada. Nuevo Costo Promedio: ${new_avg_price:,.2f}"
+    except Exception as e:
+        conn.rollback()
+        return False, str(e)
+    finally:
+        conn.close()
+
 # ... (Mantener funciones delete_investment, change_investment_order) ...
 def delete_investment(inv_id):
     conn = get_connection()
@@ -1278,3 +1440,555 @@ def delete_investment(inv_id):
         return True, "Eliminado."
     except Exception as e: return False, str(e)
     finally: conn.close()
+
+# backend/data_manager.py (NUEVA FUNCIÓN)
+
+def get_stock_historical_data(ticker, time_period='1Y'):
+    """
+    Obtiene datos históricos (cierre ajustado) para un ticker y periodo.
+    time_period: '1D', '1W', '1M', '3M', 'YTD', '1Y', '5Y'
+    """
+    if not finnhub_client:
+        return pd.DataFrame()
+
+    clean_ticker = str(ticker).strip().upper()
+    today = int(time.time())
+
+    # 1. Determinar intervalo y resolución (res)
+    if time_period in ['1D', '1W']:
+        # Resolución en minutos para periodos cortos
+        res = '5' if time_period == '1D' else '30' 
+        
+        if time_period == '1D':
+            # Simular 1 día hábil (asumimos 8 horas = 480 minutos)
+            # En realidad, Finnhub usa la hora UNIX. Vamos 24 horas atrás
+            start_time = today - (24 * 3600)
+        else: # 1W
+            start_time = today - (7 * 24 * 3600)
+            
+    else:
+        res = 'D' # Diario para periodos largos
+        # 2. Determinar tiempo de inicio (from)
+        if time_period == '1M':
+            start_time = today - (30 * 24 * 3600)
+        elif time_period == '3M':
+            start_time = today - (90 * 24 * 3600)
+        elif time_period == '1Y':
+            start_time = today - (365 * 24 * 3600)
+        elif time_period == '5Y':
+            start_time = today - (5 * 365 * 24 * 3600)
+        elif time_period == 'YTD':
+            # Inicio del año
+            jan_1 = date(date.today().year, 1, 1)
+            start_time = int(time.mktime(jan_1.timetuple()))
+        else: # Default
+            return pd.DataFrame()
+            
+    try:
+        # Llamada a la API
+        response = finnhub_client.stock_candles(clean_ticker, res, start_time, today)
+
+        if response and response['s'] == 'ok':
+            # 'c' = close price, 't' = timestamp (seconds)
+            df = pd.DataFrame({
+                'date': pd.to_datetime(response['t'], unit='s'),
+                'price': response['c']
+            })
+            # Filtrar si la fecha está antes del rango (puede pasar con Finnhub)
+            df = df[df['date'] >= pd.to_datetime(start_time, unit='s')]
+            return df.set_index('date')
+            
+    except Exception as e:
+        print(f"Error fetching historical data for {clean_ticker}: {e}")
+        
+    return pd.DataFrame()
+
+def is_ticker_valid(ticker_symbol):
+    """
+    Checks if a ticker is valid by attempting to fetch its current price quote.
+    Returns True if valid (price > 0), False otherwise.
+    """
+    if not finnhub_client:
+        print("⚠️ ADVERTENCIA: Cliente Finnhub no inicializado.")
+        # Permitir la adición si la API no está disponible (modo offline/demo)
+        return True 
+
+    clean_ticker = str(ticker_symbol).strip().upper()
+    
+    try:
+        # Usamos el endpoint de cotización (quote) que es rápido y barato
+        quote = finnhub_client.quote(clean_ticker)
+        
+        # 'c' es el precio de cierre actual. Si es > 0, es probable que sea válido.
+        current_price = float(quote.get('c', 0))
+        
+        # Si el precio es 0, Finnhub generalmente indica que el ticker no existe o es inválido.
+        return current_price > 0 
+
+    except Exception as e:
+        # Esto captura errores de red o errores de la API para un ticker no soportado
+        print(f"Error de validación del ticker {clean_ticker}: {e}")
+        return False
+
+
+# backend/data_manager.py (NUEVAS FUNCIONES A AÑADIR)
+
+# --- GESTIÓN DE VENTAS Y GANANCIAS REALIZADAS ---
+
+# backend/data_manager.py (Nuevas Funciones)
+
+def add_realized_pl_adjustment(ticker, realized_pl):
+    """Registra una ganancia/pérdida realizada manualmente (ajuste inicial de historial)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    date_recorded = date.today().strftime('%Y-%m-%d')
+    
+    try:
+        cursor.execute("""
+            INSERT INTO pl_adjustments (date, ticker, realized_pl, description)
+            VALUES (?, ?, ?, ?)
+        """, (date_recorded, ticker.upper(), realized_pl, "Ajuste manual (Pre-sistema)"))
+        
+        conn.commit()
+        return True, f"Ajuste de P/L de {ticker.upper()} registrado."
+        
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error DB al registrar ajuste: {str(e)}"
+    finally:
+        conn.close()
+
+def get_pl_adjustments_df():
+    """Obtiene todos los ajustes de P/L manuales."""
+    conn = get_connection()
+    try:
+        df = pd.read_sql_query("SELECT ticker, realized_pl FROM pl_adjustments", conn)
+        return df
+    except Exception as e:
+        print(f"Error fetching P/L adjustments: {e}")
+        return pd.DataFrame({'ticker': [], 'realized_pl': []})
+    finally:
+        conn.close()
+
+def get_investments_for_sale_dropdown():
+    """Retorna las opciones de ticker para vender (solo si shares > 0)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT ticker, shares FROM investments WHERE shares > 0 ORDER BY ticker ASC")
+        data = cursor.fetchall()
+        
+        return [{'label': f"{ticker} ({shares} un.)", 'value': ticker} for ticker, shares in data]
+    except:
+        return []
+    finally:
+        conn.close()
+
+
+# backend/data_manager.py (Nueva Función)
+
+def undo_investment_transaction(trade_id):
+    """
+    Anula una transacción de inversión (BUY o SELL):
+    1. Obtiene los datos del trade (shares, price, type, ticker).
+    2. Revierte el cambio en la posición de investments (shares y total_investment).
+    3. Elimina el registro de la tabla investment_transactions.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # 1. Obtener datos del trade
+        df_trade = pd.read_sql_query("SELECT * FROM investment_transactions WHERE id = ?", conn, params=(trade_id,))
+        if df_trade.empty:
+            return False, "Transacción no encontrada."
+            
+        trade = df_trade.iloc[0]
+        ticker = trade['ticker']
+        trade_type = trade['type']
+        shares_delta = trade['shares']
+        price = trade['price']
+        
+        # 2. Obtener datos actuales de la posición de investments
+        pos = get_investment_by_ticker(ticker)
+        if not pos:
+            # El activo ya fue eliminado, solo borramos la transacción de historial
+            cursor.execute("DELETE FROM investment_transactions WHERE id = ?", (trade_id,))
+            conn.commit()
+            return True, f"Transacción de {ticker} eliminada. El activo ya no estaba en el portafolio."
+
+
+        shares_current = pos['shares']
+        total_investment_current = pos['avg_price'] * shares_current
+        
+        # 3. Lógica de Reversión
+        if trade_type == 'SELL':
+            # Revertir Venta: Sumar acciones y sumar el costo original de esas acciones.
+            new_shares = shares_current + shares_delta
+            # El costo de las acciones vendidas es (shares_delta * avg_cost_at_trade)
+            cost_restored = shares_delta * trade['avg_cost_at_trade']
+            new_total_investment = total_investment_current + cost_restored
+            
+        elif trade_type == 'BUY':
+            # Revertir Compra: Restar acciones y restar el costo de esa compra.
+            new_shares = shares_current - shares_delta
+            cost_removed = shares_delta * price # Costo de la compra original
+            new_total_investment = total_investment_current - cost_removed
+            
+            if new_shares < -1e-6: # Pequeña tolerancia para errores de flotante
+                 return False, "Error de balance: La anulación dejaría unidades negativas. Revisa el historial de trades."
+        
+        # 4. Calcular Nuevo Costo Promedio
+        new_avg_price = new_total_investment / new_shares if new_shares > 0 else 0.0
+        
+        # 5. Actualizar DB (investments)
+        cursor.execute("""
+            UPDATE investments 
+            SET shares = ?, avg_price = ?, total_investment = ?
+            WHERE ticker = ?
+        """, (new_shares, new_avg_price, new_total_investment, ticker))
+        
+        # 6. Eliminar el registro del historial
+        cursor.execute("DELETE FROM investment_transactions WHERE id = ?", (trade_id,))
+        
+        conn.commit()
+        return True, f"Transacción de {ticker} ({trade_type}) anulada y portafolio revertido."
+        
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error al anular transacción: {str(e)}"
+    finally:
+        conn.close()
+
+# backend/data_manager.py (Nuevas Funciones Requeridas)
+
+def get_adjustment_id_by_ticker(ticker):
+    """
+    Obtiene el ID de un ajuste manual (asumiendo que solo hay uno por ticker para ajustes manuales).
+    Devuelve None si no se encuentra.
+    """
+    conn = get_connection()
+    try:
+        # Buscamos el ID del ajuste manual para este ticker
+        df = pd.read_sql_query("SELECT id, realized_pl FROM pl_adjustments WHERE ticker = ?", conn, params=(ticker,))
+        if not df.empty:
+            return df.iloc[0]['id'], df.iloc[0]['realized_pl']
+        return None, None
+    finally:
+        conn.close()
+
+
+def update_pl_adjustment(adjustment_id, new_pl_amount):
+    """Actualiza el valor de un ajuste P/L existente."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            UPDATE pl_adjustments SET realized_pl = ? WHERE id = ?
+        """, (new_pl_amount, adjustment_id))
+        
+        conn.commit()
+        return True, "Ajuste de P/L corregido exitosamente."
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error DB al actualizar ajuste: {str(e)}"
+    finally:
+        conn.close()
+
+# backend/data_manager.py (Nueva Función)
+def get_total_realized_pl():
+    """Calcula la suma total del P/L realizado de ventas y ajustes."""
+    conn = get_connection()
+    total_pl = 0.0
+    try:
+        # 1. Sumar P/L de Ventas (SELL)
+        cursor = conn.cursor()
+        cursor.execute("SELECT SUM(realized_pl) FROM investment_transactions WHERE type = 'SELL'")
+        sales_pl = cursor.fetchone()[0] or 0.0
+        
+        # 2. Sumar P/L de Ajustes Manuales
+        cursor.execute("SELECT SUM(realized_pl) FROM pl_adjustments")
+        adjustments_pl = cursor.fetchone()[0] or 0.0
+        
+        total_pl = sales_pl + adjustments_pl
+        return total_pl
+    except Exception as e:
+        print(f"Error calculating total realized PL: {e}")
+        return 0.0
+    finally:
+        conn.close()
+
+
+def get_investment_by_ticker(ticker):
+    """Obtiene los datos de un activo específico (shares y avg_price) para el formulario de venta."""
+    conn = get_connection()
+    try:
+        df = pd.read_sql_query("SELECT shares, avg_price, id FROM investments WHERE ticker = ?", conn, params=(ticker,))
+        if not df.empty:
+            return df.iloc[0].to_dict()
+        return None
+    except:
+        return None
+    finally:
+        conn.close()
+
+
+def get_investment_by_id(inv_id):
+    """Obtiene los datos de un activo específico por ID para la precarga del modal."""
+    conn = get_connection()
+    try:
+        df = pd.read_sql_query("SELECT ticker, shares, total_investment FROM investments WHERE id = ?", conn, params=(inv_id,))
+        if not df.empty:
+            return df.iloc[0].to_dict()
+        return None
+    finally:
+        conn.close()
+# backend/data_manager.py (Nueva función add_buy)
+
+# backend/data_manager.py (Funciones de Inversión - Modificadas)
+
+# ... (Las funciones auxiliares get_investment_by_ticker, get_simulator_ticker_data, etc., se mantienen) ...
+
+def add_buy(ticker, shares_bought, buy_price):
+    """
+    Registra una compra en investment_transactions y actualiza la posición en investments.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    date_bought = date.today().strftime('%Y-%m-%d')
+    
+    try:
+        # 1. Obtener datos actuales de la posición
+        cursor.execute("SELECT shares, avg_price, total_investment FROM investments WHERE ticker = ?", (ticker,))
+        pos_data = cursor.fetchone()
+        
+        # Lógica de posición inexistente (se asume add_stock es la vía principal)
+        if not pos_data or pos_data[0] == 0:
+            total_investment = shares_bought * buy_price
+            success, msg = add_stock(ticker, shares_bought, total_investment)
+            # Después de la inserción inicial, el avg_cost es el buy_price
+            avg_cost_at_trade = buy_price 
+        else:
+            shares_current, avg_cost_current, total_investment_current = pos_data
+            
+            # Cálculo de Nuevos Valores
+            cost_new_shares = shares_bought * buy_price
+            new_shares_total = shares_current + shares_bought
+            new_total_investment = total_investment_current + cost_new_shares
+
+            new_avg_price = new_total_investment / new_shares_total
+            avg_cost_at_trade = new_avg_price # Registramos el nuevo promedio después de la compra
+            
+            # 2. Actualizar DB (investments)
+            cursor.execute("""
+                UPDATE investments 
+                SET shares = ?, avg_price = ?, total_investment = ?
+                WHERE ticker = ?
+            """, (new_shares_total, new_avg_price, new_total_investment, ticker))
+            
+        # 3. Registrar en la tabla CONSOLIDADA (investment_transactions)
+        total_transaction = shares_bought * buy_price
+        cursor.execute("""
+            INSERT INTO investment_transactions (date, ticker, type, shares, price, total_transaction, avg_cost_at_trade, realized_pl)
+            VALUES (?, ?, 'BUY', ?, ?, ?, ?, 0.0)
+        """, (date_bought, ticker, shares_bought, buy_price, total_transaction, avg_cost_at_trade))
+        
+        conn.commit()
+        return True, f"Compra de {shares_bought} {ticker} registrada."
+        
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error DB al registrar compra: {str(e)}"
+    finally:
+        conn.close()
+
+
+def add_sale(ticker, shares_sold, sale_price):
+    """
+    Registra una venta en investment_transactions, calcula P/L y actualiza la posición.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    date_sold = date.today().strftime('%Y-%m-%d')
+    
+    try:
+        # 1. Obtener datos de la posición
+        pos = get_investment_by_ticker(ticker)
+        if not pos or pos['shares'] < shares_sold:
+            return False, "Error: Unidades insuficientes."
+            
+        avg_cost = pos['avg_price']
+        
+        # 2. Calcular P/L Realizada
+        realized_pl = (sale_price - avg_cost) * shares_sold
+        total_transaction = shares_sold * sale_price
+        
+        # 3. Registrar en la tabla CONSOLIDADA (investment_transactions)
+        cursor.execute("""
+            INSERT INTO investment_transactions (date, ticker, type, shares, price, total_transaction, avg_cost_at_trade, realized_pl)
+            VALUES (?, ?, 'SELL', ?, ?, ?, ?, ?)
+        """, (date_sold, ticker, shares_sold, sale_price, total_transaction, avg_cost, realized_pl))
+        
+        # 4. Actualizar unidades restantes en 'investments'
+        new_shares = pos['shares'] - shares_sold
+        new_total_investment = pos['avg_price'] * new_shares # Si las shares bajan, el total investment baja proporcionalmente
+        
+        cursor.execute("""
+            UPDATE investments SET shares = ?, total_investment = ? WHERE ticker = ?
+        """, (new_shares, new_total_investment, ticker))
+        
+        conn.commit()
+        return True, f"Venta de {shares_sold} {ticker} registrada. P&L: ${realized_pl:,.2f}"
+        
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error DB al registrar venta: {str(e)}"
+    finally:
+        conn.close()
+
+
+def delete_sale(sale_id):
+    """
+    Anula una transacción de venta: elimina el registro y devuelve las acciones al portafolio.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # 1. Obtener los datos de la venta a anular
+        df_sale = pd.read_sql_query("SELECT ticker, shares, type FROM investment_transactions WHERE id = ?", conn, params=(sale_id,))
+        if df_sale.empty or df_sale.iloc[0]['type'] != 'SELL':
+            return False, "Venta no encontrada o no es una venta."
+            
+        sale = df_sale.iloc[0]
+        ticker = sale['ticker']
+        shares_to_restore = sale['shares']
+        
+        # 2. Restaurar las unidades en la tabla 'investments'
+        # Nota: Asumimos que el costo promedio NO cambia al anular una venta
+        cursor.execute("""
+            UPDATE investments SET shares = shares + ? WHERE ticker = ?
+        """, (shares_to_restore, ticker))
+        
+        # 3. Eliminar el registro de la venta
+        cursor.execute("DELETE FROM investment_transactions WHERE id = ?", (sale_id,))
+        
+        conn.commit()
+        return True, f"Venta de {ticker} anulada. {shares_to_restore} unidades restauradas."
+        
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error al anular venta: {str(e)}"
+    finally:
+        conn.close()
+
+
+def get_investment_transactions_df(transaction_type=None):
+    """Obtiene el historial completo de transacciones de inversión (Compra/Venta)."""
+    conn = get_connection()
+    try:
+        if transaction_type in ['BUY', 'SELL']:
+             query = "SELECT * FROM investment_transactions WHERE type = ? ORDER BY date DESC, id DESC"
+             params = (transaction_type,)
+        else:
+            query = "SELECT * FROM investment_transactions ORDER BY date DESC, id DESC"
+            params = ()
+            
+        df = pd.read_sql_query(query, conn, params=params)
+        df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+        return df
+    except Exception as e:
+        print(f"Error fetching investment transactions: {e}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
+       
+# Modificación al setup de la base de datos (database.py)
+# ----------------------------------------------------------------------
+
+# NOTE: Debes asegurarte de que tu archivo `database.py` contenga la nueva tabla
+# sales_history y actualizar el archivo `index.py` para usar el nuevo
+# `investments.py` como contenedor principal.
+
+# TABLA sales_history:
+"""
+CREATE TABLE IF NOT EXISTS sales_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    shares_sold REAL NOT NULL,
+    sale_price REAL NOT NULL,
+    avg_cost REAL NOT NULL,
+    realized_pl REAL NOT NULL,
+    sale_value REAL NOT NULL
+);
+"""
+
+# backend/data_manager.py (Nueva función para el Simulador)
+
+def get_simulator_ticker_data(ticker):
+    """
+    Retrieves DB data (shares, avg_price) and current price (live API call) 
+    for a single ticker required by the simulator.
+    """
+    conn = get_connection()
+    try:
+        # 1. Get DB data
+        df_db = pd.read_sql_query("SELECT shares, avg_price FROM investments WHERE ticker = ?", conn, params=(ticker,))
+        if df_db.empty or df_db.iloc[0]['shares'] <= 0:
+            return None 
+
+        db_row = df_db.iloc[0]
+        avg_price = db_row['avg_price']
+        shares_available = db_row['shares']
+
+        # 2. Get Live Price (Assumes _get_price_finnhub is correctly defined with 4 returns)
+        # Requerimos el precio actual
+        current_price, _, _, _ = _get_price_finnhub(ticker, avg_price) 
+        
+        if current_price == 0:
+            return None # Invalid ticker or price failed to load
+            
+        return {
+            'shares_available': shares_available,
+            'avg_cost': avg_price,
+            'current_price': current_price
+        }
+
+    except Exception as e:
+        print(f"Error fetching simulator data for {ticker}: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+# backend/data_manager.py (Agregar esta función)
+
+# backend/data_manager.py (get_total_historical_investment_cost)
+
+def get_total_historical_investment_cost():
+    """
+    Calcula el Costo de Adquisición Total (el capital invertido)
+    Costo Total = Costo Activos Vivos + Costo de Activos Vendidos.
+    """
+    conn = get_connection()
+    
+    try:
+        # 1. Costo Total de Activos Vivos (total_investment)
+        cursor = conn.cursor()
+        cursor.execute("SELECT SUM(total_investment) FROM investments")
+        cost_live_assets = cursor.fetchone()[0] or 0.0
+        
+        # 2. Costo (Inversión Inicial) de las Ventas Cerradas
+        cursor.execute("SELECT SUM(shares * avg_cost_at_trade) FROM investment_transactions WHERE type = 'SELL'")
+        cost_sold_assets = cursor.fetchone()[0] or 0.0
+
+        total_cost_acquisition = cost_live_assets + cost_sold_assets
+        
+        return total_cost_acquisition
+        
+    except Exception as e:
+        print(f"Error calculating total historical cost: {e}")
+        return 0.0
+    finally:
+        conn.close()
