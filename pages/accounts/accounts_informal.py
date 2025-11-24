@@ -27,28 +27,22 @@ def update_informal_dashboard(pathname, deb_msg_content, inst_signal):
     if pathname != "/cuentas":
         return no_update
 
-    # 1. Obtener Datos
-    # informal_debt: lo que YO DEBO informalmente (pasivo)
-    # informal_collectible: lo que ME DEBEN informalmente (activo)
-    informal_debt, informal_collectible = dm.get_informal_summary()
-    
-    # credit_exigible_net: lo que DEBO en tarjeta (neto, exigible, sin cuotas)
-    credit_exigible_net = dm.get_net_exigible_credit_debt()
+    # 1. Obtener Datos (LLAMADA UNIFICADA)
+    # 🚨 ANTES:
+    # informal_debt, informal_collectible = dm.get_informal_summary()
+    # credit_exigible_net = dm.get_net_exigible_credit_debt()
+    # total_gross_debt = informal_debt + credit_exigible_net
+    # net_exposure = total_gross_debt - informal_collectible
+    # informal_net_balance = informal_collectible - informal_debt
 
-    # ----------------------------------------------------
-    # CARD 1 CÁLCULO: Exposición Neta (Deuda Total - Cobros)
-    # ----------------------------------------------------
-    # Total a Deber (Exposición Bruta) = Deuda Informal + Exigible de Tarjeta
-    total_gross_debt = informal_debt + credit_exigible_net
+    # ✅ AHORA:
+    summary = dm.get_full_debt_summary()
     
-    # Exposición Neta = (Total a Deber) - (Total Cobros Informales)
-    net_exposure = total_gross_debt - informal_collectible
-    
-    # ----------------------------------------------------
-    # CARD 2 CÁLCULO: Saldo Neto Informal
-    # ----------------------------------------------------
-    # Saldo Neto Informal = Cobros Informales (Activo) - Deudas Informales (Pasivo)
-    informal_net_balance = informal_collectible - informal_debt
+    informal_debt = summary['informal_debt']
+    informal_collectible = summary['informal_collectible']
+    net_exposure = summary['net_exposure']
+    informal_net_balance = summary['informal_net_balance']
+    total_gross_debt = summary['total_gross_debt']
 
     
     # Determinar el color para CARD 2 (Balance Neto Informal)

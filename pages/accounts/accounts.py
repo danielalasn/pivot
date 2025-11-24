@@ -54,9 +54,12 @@ layout = dbc.Container([
 # --- CALLBACKS para el Mini-Dashboard ---
 # accounts.py - Callback update_account_summary
 
+# pages/accounts.py
+# pages/accounts.py
+
 @callback(
     [Output("summary-total-assets", "children"),
-     Output("summary-total-liabilities", "children")], # SOLO 2 OUTPUTS RESTANTES
+     Output("summary-total-liabilities", "children")], 
     [Input("url", "pathname"), 
      Input("accounts-tabs", "active_tab"), 
      Input("deb-msg", "children"), 
@@ -68,10 +71,34 @@ def update_account_summary(pathname, active_tab, deb_msg, inst_signal):
 
     summary = dm.get_account_type_summary()
     
+    # 1. VISUALIZACIÓN DE ACTIVOS
+    total_assets = summary['TotalAssets']
+    liquid = summary['LiquidAssets']
+    reserve = summary['ReserveAssets']
+    
+    assets_display = html.Div([
+        html.Span(f"${total_assets:,.2f}", className="fw-bold"),
+        html.Br(),
+        html.Small(
+            f"Cuentas: ${liquid:,.2f} | Reserva: ${reserve:,.2f}", 
+            className="text-muted", 
+            style={"fontSize": "0.9rem", "fontWeight": "normal"}
+        )
+    ])
+    
+    # 2. VISUALIZACIÓN DE PASIVOS (Con Desglose)
     total_liabilities = summary['TotalLiabilities']
+    immediate = summary['ImmediateDebt']
+    installments = summary['InstallmentsDebt']
     
-    total_assets_str = f"${summary['TotalAssets']:,.2f}"
-    total_liabilities_str = f"${total_liabilities:,.2f}"
+    liabilities_display = html.Div([
+        html.Span(f"${total_liabilities:,.2f}", className="fw-bold"), # Número Grande
+        html.Br(),
+        html.Small(
+            f"Exigible: ${immediate:,.2f} | Cuotas: ${installments:,.2f}", 
+            className="text-muted", 
+            style={"fontSize": "0.9rem", "fontWeight": "normal"}
+        )
+    ])
     
-    # El retorno solo debe tener el total de Activos y el total de Pasivos
-    return total_assets_str, total_liabilities_str
+    return assets_display, liabilities_display

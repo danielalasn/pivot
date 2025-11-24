@@ -161,47 +161,105 @@ def change_account_order(account_id, direction, category_group):
         conn.commit()
         conn.close()
 
+# backend/data_manager.py
+
 def get_account_options():
+    """
+    Retorna las opciones para dropdowns de cuentas, incluyendo el saldo disponible
+    entre paréntesis para todas las cuentas, y la Reserva de Abono al final.
+    """
     conn = get_connection()
     cursor = conn.cursor()
+    
+    # 1. Obtener Cuentas Normales
     try:
-        cursor.execute("SELECT id, name, bank_name, type FROM accounts ORDER BY display_order ASC")
+        cursor.execute("SELECT id, name, bank_name, type, current_balance FROM accounts ORDER BY display_order ASC")
         data = cursor.fetchall()
-    except: data = []
-    conn.close()
-    return [{'label': f"{name} - {bank} ({atype})", 'value': i} for i, name, bank, atype in data]
+        
+        # 🚨 CAMBIO AQUÍ: Incluimos current_balance en el formato 🚨
+        options = []
+        for i, name, bank, atype, balance in data:
+            # Para Crédito, el saldo actual es la deuda (se muestra negativo si es activo)
+            # Usamos el saldo para mostrar la disponibilidad (que es el current_balance)
+            display_balance = balance if atype != 'Credit' else (balance * -1) 
+            
+            # Formato: Nombre - Banco (Tipo) ($XX.XX)
+            label = f"{name} - {bank} ({atype}) (${balance:,.2f})"
+            
+            options.append({'label': label, 'value': i})
+            
+    except Exception as e: 
+        print(f"Error fetching accounts for options: {e}")
+        options = []
+    
+    # 2. Obtener Saldo de Reserva
+    try:
+        reserve_bal = get_credit_abono_reserve()
+    except:
+        reserve_bal = 0.0
 
-# data_manager.py
+    # 3. Agregar Opción de Reserva al FINAL (sin el prefijo "Disponible:")
+    reserve_option = {
+        'label': f"Reserva de Abono (${reserve_bal:,.2f})", 
+        'value': 'RESERVE'
+    }
+    
+    options.append(reserve_option) 
+    
+    conn.close()
+    return options
+
+
 
 def get_account_type_summary():
-    """Calcula el total de activos, pasivos formales, y añade el detalle de cuotas para el resumen superior."""
+    """Calcula el total de activos y pasivos con desglose detallado."""
     conn = get_connection()
     summary = {}
     try:
-        # Get Credit Summary Data (Reuse the calculation that fetches installment totals)
-        credit_data = get_credit_summary_data() 
-        
-        # 1. CÁLCULO DE CUENTAS BANCARIAS Y CRÉDITO
+        # 1. CÁLCULO DE ACTIVOS
         df_accounts = pd.read_sql_query("SELECT type, current_balance FROM accounts", conn)
+        liquid_assets = df_accounts[df_accounts['type'].isin(['Debit', 'Cash'])]['current_balance'].sum()
         
-        total_assets = df_accounts[df_accounts['type'].isin(['Debit', 'Cash'])]['current_balance'].sum()
-        total_liabilities = df_accounts[df_accounts['type'] == 'Credit']['current_balance'].sum()
+        try: reserve_bal = get_credit_abono_reserve()
+        except: reserve_bal = 0.0
+            
+        # 2. CÁLCULO DE PASIVOS
+        # Deuda Total Tarjetas
+        total_liabilities_cards = df_accounts[df_accounts['type'] == 'Credit']['current_balance'].sum()
         
-        # 2. CÁLCULO DE DEUDAS INFORMALES (IOU) - (Must be kept to ensure Net Worth is correct)
+        # Deuda Informal (IOU por Pagar)
         df_iou = pd.read_sql_query("SELECT type, current_amount FROM iou WHERE status = 'Pending'", conn)
         liabilities_informal = df_iou[df_iou['type'] == 'Payable']['current_amount'].sum() if not df_iou.empty else 0.0
         
-        # --- RETURN MODIFICADO ---
-        summary['TotalAssets'] = total_assets
-        # Sumamos pasivos formales e informales para el KPI superior
-        summary['TotalLiabilities'] = total_liabilities + liabilities_informal 
-        summary['InstallmentsDebt'] = credit_data['total_installments'] # Detalle de cuotas
+        # Obtener detalle de Cuotas (Installments)
+        credit_data = get_credit_summary_data() 
+        installments_debt = credit_data['total_installments']
+
+        # --- RESULTADOS FINALES ---
+        
+        # ACTIVOS
+        summary['TotalAssets'] = liquid_assets + reserve_bal
+        summary['LiquidAssets'] = liquid_assets
+        summary['ReserveAssets'] = reserve_bal
+        
+        # PASIVOS
+        total_liabilities = total_liabilities_cards + liabilities_informal
+        
+        # Desglose Pasivos:
+        # Inmediato = (Deuda Total - Cuotas)
+        # Nota: "Deuda Total" ya incluye lo informal, así que al restar cuotas nos queda todo lo que hay que pagar ya.
+        immediate_debt = total_liabilities - installments_debt
+        if immediate_debt < 0: immediate_debt = 0 # Seguridad
+        
+        summary['TotalLiabilities'] = total_liabilities
+        summary['InstallmentsDebt'] = installments_debt # A Plazos
+        summary['ImmediateDebt'] = immediate_debt       # Al día / Exigible
         
     except Exception as e:
         print(f"Error getting account type summary: {e}")
-        summary['TotalAssets'] = 0.0
-        summary['TotalLiabilities'] = 0.0
-        summary['InstallmentsDebt'] = 0.0
+        # Retorno seguro en caso de error
+        for k in ['TotalAssets', 'LiquidAssets', 'ReserveAssets', 'TotalLiabilities', 'InstallmentsDebt', 'ImmediateDebt']:
+            summary[k] = 0.0
     finally:
         conn.close()
     return summary
@@ -487,13 +545,25 @@ def add_iou(name, amount, iou_type, due_date, person_name=None, description=None
         conn.close()
 
 
+# backend/data_manager.py
+
 def get_iou_df():
     conn = get_connection()
     try:
-        # Recuperamos todas las deudas pendientes
-        df = pd.read_sql_query("SELECT * FROM iou WHERE status = 'Pending' ORDER BY date_created DESC", conn)
+        # 🚨 CAMBIO: Ordenamos por 'type ASC' para que los 'Payable' (Yo debo) 
+        # salgan primero en la tabla y puedas ver ese registro de $31 perdido.
+        df = pd.read_sql_query("""
+            SELECT * FROM iou 
+            WHERE status = 'Pending' AND current_amount > 0 
+            ORDER BY type ASC, date_created DESC
+        """, conn)
+        
+        # (Opcional) Si quieres asegurar el orden visual en Python también:
+        # df.sort_values(by=['type', 'date_created'], ascending=[True, False], inplace=True)
+        
         df['type_display'] = df['type'].apply(lambda x: "Por Cobrar (Activo)" if x == 'Receivable' else "Por Pagar (Pasivo)")
-    except: 
+    except Exception as e: 
+        print(f"Error fetching iou df: {e}")
         df = pd.DataFrame()
     finally:
         conn.close()
@@ -524,26 +594,30 @@ def get_iou_by_id(iou_id):
         return None
     finally:
         conn.close()
+# backend/data_manager.py (Función update_iou)
 
-def update_iou(iou_id, name, amount, iou_type, due_date, person_name, description, current_amount, status):
+def update_iou(iou_id, name, new_original_amount, iou_type, due_date, person_name, description, new_current_amount, status):
     """Actualiza una cuenta pendiente existente."""
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        # Nota: La columna 'amount' es el monto ORIGINAL, 'current_amount' es el saldo.
+        # 🚨 VALIDACIÓN CLAVE: El saldo pendiente no puede exceder el monto original.
+        if new_current_amount > new_original_amount + 0.01:
+             return False, f"Error: El saldo pendiente (${new_current_amount:,.2f}) no puede ser mayor que el monto original (${new_original_amount:,.2f})."
+
+        # 🚨 ACTUALIZACIÓN: Se permite actualizar el 'amount' (original) y el 'current_amount' (pendiente)
         cursor.execute("""
             UPDATE iou SET 
                 name = ?, amount = ?, type = ?, due_date = ?, 
                 person_name = ?, description = ?, current_amount = ?, status = ?
             WHERE id = ?
-        """, (name, amount, iou_type, due_date, person_name, description, current_amount, status, iou_id))
+        """, (name, new_original_amount, iou_type, due_date, person_name, description, new_current_amount, status, iou_id))
         conn.commit()
         return True, "Cuenta pendiente actualizada exitosamente."
     except Exception as e:
         return False, f"Error al actualizar: {str(e)}"
     finally:
         conn.close()
-
 # data_manager.py
 
 def get_account_name_summary():
@@ -583,29 +657,64 @@ def get_transaction_by_id(trans_id):
     finally:
         conn.close()
 
+# backend/data_manager.py
+
 def _adjust_account_balance(cursor, account_id, amount, trans_type, is_reversal=False):
-    """Helper para sumar o restar un monto del balance de una cuenta."""
+    """
+    Helper para sumar o restar un monto del balance de una cuenta O de la Reserva.
+    Maneja account_id='RESERVE' para la tabla abono_reserve.
+    """
     
-    cursor.execute("SELECT type FROM accounts WHERE id = ?", (account_id,))
-    res = cursor.fetchone()
-    acc_type = res[0] if res else "Debit"
-    
-    multiplier = -1 if is_reversal else 1
-    
-    if acc_type == 'Credit':
-        # En Crédito: Gasto SUMA deuda. Ingreso RESTA deuda.
+    # --- CASO ESPECIAL: RESERVA DE ABONO ---
+    if account_id == 'RESERVE':
+        # Obtener saldo actual
+        cursor.execute("SELECT balance FROM abono_reserve WHERE id = 1")
+        res = cursor.fetchone()
+        current_bal = res[0] if res else 0.0
+        
+        multiplier = -1 if is_reversal else 1
+        
+        # Lógica de Reserva (Funciona como una cuenta de Débito/Efectivo):
+        # Income (Cobro) -> Aumenta la reserva
+        # Expense (Pago) -> Disminuye la reserva
         if trans_type == 'Expense':
-            new_amount = amount * multiplier
+            change = amount * multiplier * -1
         else: # Income
-            new_amount = amount * multiplier * -1 
-    else: # Debit/Cash
-        # En Débito: Gasto RESTA balance. Ingreso SUMA balance.
-        if trans_type == 'Expense':
-            new_amount = amount * multiplier * -1
-        else: # Income
-            new_amount = amount * multiplier
-    
-    cursor.execute("UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?", (new_amount, account_id))
+            change = amount * multiplier
+            
+        new_bal = current_bal + change
+        
+        # Asegurar que la tabla existe (por seguridad)
+        cursor.execute("INSERT OR IGNORE INTO abono_reserve (id, balance) VALUES (1, 0.0)")
+        cursor.execute("UPDATE abono_reserve SET balance = ? WHERE id = 1", (new_bal,))
+        return
+
+    # --- CASO NORMAL: CUENTAS BANCARIAS ---
+    # (Lógica original para cuentas normales)
+    try:
+        cursor.execute("SELECT type FROM accounts WHERE id = ?", (account_id,))
+        res = cursor.fetchone()
+        if not res: return # Cuenta no existe
+        
+        acc_type = res[0]
+        multiplier = -1 if is_reversal else 1
+        
+        if acc_type == 'Credit':
+            # En Crédito: Gasto SUMA deuda. Ingreso RESTA deuda.
+            if trans_type == 'Expense':
+                new_amount = amount * multiplier
+            else: # Income
+                new_amount = amount * multiplier * -1 
+        else: # Debit/Cash
+            # En Débito: Gasto RESTA balance. Ingreso SUMA balance.
+            if trans_type == 'Expense':
+                new_amount = amount * multiplier * -1
+            else: # Income
+                new_amount = amount * multiplier
+        
+        cursor.execute("UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?", (new_amount, account_id))
+    except Exception as e:
+        print(f"Error ajustando balance cuenta {account_id}: {e}")
 
 def delete_transaction(trans_id):
     conn = get_connection()
@@ -728,35 +837,80 @@ def setup_abono_reserve():
 # data_manager.py
 
 # ... (Al final del archivo, junto a las funciones de resumen de crédito) ...
+# backend/data_manager.py
 
 def get_informal_summary():
     """
-    Calcula el total de deudas informales (negativo) y cobros informales (positivo).
-    Las cuentas informales son aquellas que no son de crédito, separadas por el signo de balance.
+    Calcula el total de deudas informales (Payable) y cobros informales (Receivable) 
+    a partir de la tabla 'iou' con estado 'Pending' Y saldo positivo.
     Retorna: (total_debt_i, total_collectible_i) ambos como valores absolutos.
     """
     conn = get_connection()
     try:
-        # Filtra todas las cuentas que NO son de Crédito (Tarjetas)
-        df = pd.read_sql_query("SELECT current_balance FROM accounts WHERE type != 'Credit'", conn)
-        
-        if df.empty:
-            return 0.0, 0.0
+        # 🚨 CORRECCIÓN CRÍTICA: Añadir 'AND current_amount > 0' para coincidir con la tabla
+        df_iou = pd.read_sql_query("""
+            SELECT type, current_amount 
+            FROM iou 
+            WHERE status = 'Pending' AND current_amount > 0
+        """, conn)
 
-        # Deuda Informal (Saldos Negativos: lo que YO DEBO)
-        informal_debt = df[df['current_balance'] < 0]['current_balance'].sum() 
-        
-        # Cobros Informales (Saldos Positivos: lo que ME DEBEN)
-        informal_collectible = df[df['current_balance'] > 0]['current_balance'].sum()
+        if df_iou.empty:
+            return 0.0, 0.0
+            
+        # Deudas por Pagar (Pasivo)
+        payables = df_iou[df_iou['type'] == 'Payable']['current_amount'].sum()
+        # Deudas por Cobrar (Activo)
+        receivables = df_iou[df_iou['type'] == 'Receivable']['current_amount'].sum()
 
         # Retornamos los valores absolutos
-        return abs(informal_debt), informal_collectible 
+        return abs(payables), abs(receivables)
         
     except Exception as e:
         print(f"Error getting informal summary: {e}")
         return 0.0, 0.0
     finally:
         conn.close()
+
+def get_full_debt_summary():
+    """
+    Calcula y retorna un diccionario con el resumen consolidado
+    de Deudas y Cobros Informales (IOU) y Deuda Exigible de Tarjetas.
+    """
+    # 1. Obtener el resumen de IOU (Asume que esta función ya existe y funciona)
+    # Retorna: (lo_que_yo_debo_informalmente, lo_que_me_deben_informalmente)
+    try:
+        informal_debt, informal_collectible = get_informal_summary()
+    except Exception as e:
+        print(f"Error al obtener resumen informal: {e}")
+        informal_debt, informal_collectible = 0.0, 0.0
+
+    # 2. Obtener la deuda de Tarjeta de Crédito Exigible
+    # Ya incluye la reserva de abono (es la deuda neta exigible)
+    try:
+        credit_exigible_net = get_net_exigible_credit_debt()
+    except Exception as e:
+        print(f"Error al obtener deuda crédito exigible: {e}")
+        credit_exigible_net = 0.0
+
+    # 3. CÁLCULOS CONSOLIDADOS (La lógica centralizada)
+    
+    # Deuda total que tengo (IOU Payable + Tarjeta Neta Exigible)
+    total_gross_debt = informal_debt + credit_exigible_net
+    
+    # Exposición real: Deuda Total - Cobros que me deben (IOU Receivable)
+    net_exposure = total_gross_debt - informal_collectible
+    
+    # Saldo neto solo de IOU: Cobros - Deudas informales
+    informal_net_balance = informal_collectible - informal_debt
+
+    return {
+        'informal_debt': informal_debt,
+        'informal_collectible': informal_collectible,
+        'credit_exigible_net': credit_exigible_net,
+        'total_gross_debt': total_gross_debt,
+        'net_exposure': net_exposure,
+        'informal_net_balance': informal_net_balance
+    }
 
 def get_net_exigible_credit_debt():
     """Calcula el monto exigible neto (sin cuotas y restando la reserva de abono)."""
@@ -781,26 +935,194 @@ def get_net_exigible_credit_debt():
 
 # ... (Al final del archivo) ...
 
-def get_net_worth_breakdown():
+# backend/data_manager.py
+
+# backend/data_manager.py
+# backend/data_manager.py
+
+from datetime import datetime, timedelta # Asegúrate de tener estos imports
+
+# ... (otras funciones) ...
+
+def get_stocks_data(force_refresh=False):
+    """
+    Recupera posiciones de inversión.
+    1. Busca precios en la tabla 'market_cache'.
+    2. Si el precio es antiguo (>20 min) o force_refresh=True, llama a la API.
+    3. Actualiza la tabla de caché y retorna los datos.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Obtener todas las inversiones del usuario
+        df_inv = pd.read_sql_query("SELECT * FROM investments ORDER BY display_order ASC", conn)
+        if df_inv.empty: return []
+        
+        stocks_list = []
+        
+        for _, row in df_inv.iterrows():
+            ticker = row['ticker']
+            shares = row['shares']
+            avg_price = row['avg_price']
+            asset_type_db = row['asset_type']
+            
+            # --- LÓGICA DE CACHÉ INTELIGENTE ---
+            current_price = 0.0
+            prev_close = 0.0
+            name = ticker
+            sector = 'N/A'
+            
+            # 1. Verificar caché en DB
+            cursor.execute("SELECT price, prev_close, company_name, sector, last_updated FROM market_cache WHERE ticker = ?", (ticker,))
+            cache_row = cursor.fetchone()
+            
+            need_api_call = True
+            
+            if cache_row and not force_refresh:
+                cached_price, cached_pc, cached_name, cached_sector, last_upd_str = cache_row
+                
+                # Verificar antigüedad (Ej: 20 minutos)
+                last_upd = datetime.strptime(last_upd_str, "%Y-%m-%d %H:%M:%S")
+                if datetime.now() - last_upd < timedelta(minutes=20):
+                    # Usar datos de caché
+                    current_price = cached_price
+                    prev_close = cached_pc
+                    name = cached_name
+                    sector = cached_sector
+                    need_api_call = False
+            
+            # 2. Si necesitamos actualizar (o no había caché)
+            if need_api_call:
+                # Llamada a API (Tu función existente)
+                c_price, p_close, c_name, c_sector = _get_price_finnhub(ticker, avg_price)
+                
+                # Si la API devolvió éxito, actualizamos la DB
+                if c_price > 0:
+                    current_price = c_price
+                    prev_close = p_close
+                    name = c_name
+                    sector = c_sector
+                    
+                    # Guardar en DB (Upsert)
+                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    cursor.execute("""
+                        INSERT INTO market_cache (ticker, price, prev_close, company_name, sector, last_updated)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(ticker) DO UPDATE SET
+                            price=excluded.price,
+                            prev_close=excluded.prev_close,
+                            last_updated=excluded.last_updated
+                    """, (ticker, current_price, prev_close, name, sector, now_str))
+                    conn.commit()
+                else:
+                    # Si la API falló, usamos el caché viejo si existe, o el precio promedio
+                    if cache_row:
+                        current_price = cache_row[0]
+                    else:
+                        current_price = avg_price
+
+            # --- CÁLCULOS FINANCIEROS ---
+            market_value = current_price * shares
+            total_cost = avg_price * shares
+            total_gain = market_value - total_cost
+            total_gain_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
+            
+            day_change_pct = 0
+            if prev_close > 0:
+                day_change_pct = ((current_price - prev_close) / prev_close) * 100
+
+            # CLASIFICACIÓN DE TIPO
+            final_asset_type = asset_type_db 
+            if sector in ['Exchange Traded Fund', 'Fund']: final_asset_type = 'ETF'
+            elif ticker in ['SPY', 'QQQ', 'VOO', 'VT', 'BND', 'VTI', 'QTUM']: final_asset_type = 'ETF'
+            elif 'USD' in ticker.upper() or 'USDT' in ticker.upper() or '/' in ticker: final_asset_type = 'CRYPTO_FOREX'
+            elif asset_type_db == 'ETF': final_asset_type = 'ETF'
+
+            if final_asset_type == 'ETF': sector = 'Fondos (ETF)'
+            elif final_asset_type == 'CRYPTO_FOREX': sector = 'Cripto/Forex'
+            elif sector == 'N/A' or sector == '': sector = 'Sin Clasificar' 
+
+            stocks_list.append({
+                'id': row['id'],
+                'ticker': ticker,
+                'name': name,
+                'shares': shares,
+                'avg_price': avg_price,
+                'current_price': current_price,
+                'market_value': market_value,
+                'total_gain': total_gain,
+                'total_gain_pct': total_gain_pct,
+                'day_change_pct': day_change_pct,
+                'sector': sector,
+                'asset_type': final_asset_type
+            })
+            
+        return stocks_list
+    
+    except Exception as e:
+        print(f"Error obteniendo stocks: {e}")
+        return []
+    finally:
+        conn.close()
+
+def get_data_timestamp():
+    """Devuelve la fecha más reciente de actualización en la tabla market_cache."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT MAX(last_updated) FROM market_cache")
+        res = cursor.fetchone()
+        return res[0] if res and res[0] else "Sin datos"
+    except:
+        return "Error"
+    finally:
+        conn.close()
+
+# backend/data_manager.py
+
+def get_net_worth_breakdown(force_refresh=False): # <--- CORRECCIÓN 1: AÑADIDO PARÁMETRO
     """
     Obtiene un desglose detallado del Patrimonio Neto:
-    - Activos: Cuentas (Debit/Cash) + Cobros Informales (Receivables)
-    - Pasivos: Deuda Tarjetas (Credit) + Deudas Informales (Payables)
+    - Activos: Cuentas + Cobros (IOU) + Reserva Abono + INVERSIONES
+    - Pasivos: Deuda Tarjetas + Deudas Informales (IOU)
+    Acepta force_refresh para actualizar precios de inversiones en vivo.
     """
     conn = get_connection()
     details = {
         'net_worth': 0.0,
-        'assets': {'total': 0.0, 'liquid': 0.0, 'receivables': 0.0},
+        'assets': {'total': 0.0, 'liquid': 0.0, 'receivables': 0.0, 'investments': 0.0},
         'liabilities': {'total': 0.0, 'credit_cards': 0.0, 'payables': 0.0}
     }
     try:
         # 1. Cuentas Bancarias y Crédito
         df_acc = pd.read_sql_query("SELECT type, current_balance FROM accounts", conn)
         
-        liquid = df_acc[df_acc['type'].isin(['Debit', 'Cash'])]['current_balance'].sum()
+        # Activos Bancarios Normales
+        liquid_bank = df_acc[df_acc['type'].isin(['Debit', 'Cash'])]['current_balance'].sum()
+        
+        # Reserva de Abono
+        try: reserve_bal = get_credit_abono_reserve()
+        except: reserve_bal = 0.0
+
+        # 2. INVERSIONES (Valor de Mercado)
+        investments_value = 0.0
+        try:
+            # CORRECCIÓN 2: Pasamos el flag force_refresh a get_stocks_data
+            stocks_list = get_stocks_data(force_refresh=force_refresh) 
+            if stocks_list:
+                investments_value = sum(item['market_value'] for item in stocks_list)
+        except Exception as e:
+            print(f"Error calculating investments for Net Worth: {e}")
+            investments_value = 0.0
+
+        # Total Líquido = Bancos + Reserva
+        liquid_total = liquid_bank + reserve_bal
+
+        # Pasivos Bancarios (Tarjetas)
         credit_debt = df_acc[df_acc['type'] == 'Credit']['current_balance'].sum()
 
-        # 2. Deudas y Cobros Informales (IOU)
+        # 3. Deudas y Cobros Informales (IOU)
         df_iou = pd.read_sql_query("SELECT type, current_amount FROM iou WHERE status = 'Pending'", conn)
         
         receivables = 0.0
@@ -810,15 +1132,16 @@ def get_net_worth_breakdown():
             receivables = df_iou[df_iou['type'] == 'Receivable']['current_amount'].sum()
             payables = df_iou[df_iou['type'] == 'Payable']['current_amount'].sum()
 
-        # 3. Consolidación
-        total_assets = liquid + receivables
+        # 4. CONSOLIDACIÓN FINAL
+        total_assets = liquid_total + receivables + investments_value
         total_liabilities = credit_debt + payables
         
         details['net_worth'] = total_assets - total_liabilities
         
         details['assets']['total'] = total_assets
-        details['assets']['liquid'] = liquid
+        details['assets']['liquid'] = liquid_total
         details['assets']['receivables'] = receivables
+        details['assets']['investments'] = investments_value
         
         details['liabilities']['total'] = total_liabilities
         details['liabilities']['credit_cards'] = credit_debt
@@ -1066,92 +1389,6 @@ def _get_price_finnhub(ticker_symbol, avg_price_fallback=0):
         return avg_price_fallback, avg_price_fallback, clean_ticker, 'N/A'
 
 
-def get_stocks_data():
-    """
-    Recupera todas las posiciones de inversión, obtiene precios en vivo de la API,
-    y clasifica cada activo como STOCK, ETF, o CRYPTO_FOREX para el caché del frontend.
-    """
-    conn = get_connection()
-    try:
-        # Recuperamos TODAS las posiciones de la tabla investments
-        df = pd.read_sql_query("SELECT * FROM investments ORDER BY display_order ASC", conn)
-        if df.empty: 
-            return []
-        
-        stocks_list = []
-        for _, row in df.iterrows():
-            ticker = row['ticker']
-            shares = row['shares']
-            avg_price = row['avg_price']
-            
-            # 1. LLAMADA API: Obtener datos en vivo y clasificación
-            current_price, prev_close, name, sector = _get_price_finnhub(ticker, avg_price)
-            
-            # --- 2. CÁLCULO DE MÉTRICAS ---
-            market_value = current_price * shares
-            total_cost = avg_price * shares
-            total_gain = market_value - total_cost
-            total_gain_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
-            
-            day_change_pct = 0
-            if prev_close > 0:
-                day_change_pct = ((current_price - prev_close) / prev_close) * 100
-
-            # --- 3. CLASIFICACIÓN FINAL DE ASSET_TYPE (Para la pestaña del frontend) ---
-            asset_type_db = row['asset_type']
-            final_asset_type = asset_type_db 
-            
-            # Regla A: Clasificación basada en el sector de Finnhub
-            if sector in ['Exchange Traded Fund', 'Fund']:
-                 final_asset_type = 'ETF'
-            
-            # Regla B: Chequeo manual para ETFs comunes
-            elif ticker in ['SPY', 'QQQ', 'VOO', 'VT', 'BND', 'VTI', 'QTUM']: 
-                 final_asset_type = 'ETF'
-                 
-            # Regla C: Clasificación CRYPTO/FOREX (Patrón de pares)
-            elif 'USD' in ticker.upper() or 'USDT' in ticker.upper() or '/' in ticker:
-                 final_asset_type = 'CRYPTO_FOREX'
-                 
-            # Regla D: Mantenemos el valor original de la BD si ya está clasificado
-            elif asset_type_db == 'ETF':
-                 final_asset_type = 'ETF'
-            # (Si no coincide con nada, se asume 'Stock' por defecto de la BD)
-
-            # --- 4. AJUSTE DEL CAMPO 'sector' (Para el gráfico de pastel) ---
-            # Si clasificamos el activo como ETF o Crypto, sobreescribimos el sector para el gráfico.
-            if final_asset_type == 'ETF':
-                sector = 'Fondos (ETF)'
-            elif final_asset_type == 'CRYPTO_FOREX':
-                sector = 'Cripto/Forex'
-            elif sector == 'N/A' or sector == '':
-                # Si es un Stock pero el sector no se encontró, lo etiquetamos
-                sector = 'Sin Clasificar' 
-
-            # 5. CONSTRUCCIÓN DE LA LISTA DE STOCKS PARA EL CACHÉ
-            stocks_list.append({
-                'id': row['id'],
-                'ticker': ticker,
-                'name': name,
-                'shares': shares,
-                'avg_price': avg_price,
-                'current_price': current_price,
-                'market_value': market_value,
-                'total_gain': total_gain,
-                'total_gain_pct': total_gain_pct,
-                'day_change_pct': day_change_pct,
-                'sector': sector,           # <-- Usado para el gráfico de pastel (limpio)
-                'asset_type': final_asset_type  # <-- Usado para el filtro de pestañas
-            })
-            
-        return stocks_list
-    
-    except Exception as e:
-        print(f"Error al obtener datos de stocks: {e}")
-        return []
-        
-    finally:
-        conn.close()
 
 # backend/data_manager.py (NUEVA FUNCIÓN)
 
@@ -1990,5 +2227,160 @@ def get_total_historical_investment_cost():
     except Exception as e:
         print(f"Error calculating total historical cost: {e}")
         return 0.0
+    finally:
+        conn.close()
+
+# backend/data_manager.py (Nueva Función)
+# backend/data_manager.py
+
+# backend/data_manager.py
+
+# backend/data_manager.py
+
+def make_iou_payment(iou_id, payment_amount, account_id=None):
+    """
+    Registra un abono/pago parcial a una cuenta IOU y actualiza el saldo.
+    Retorna 4 VALORES: (success, msg, new_amount, new_status)
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # Valores por defecto para evitar errores en el return si falla antes
+    current_amount = 0.0
+    current_status = "Pending"
+
+    try:
+        # 1. Obtener datos de la IOU
+        iou = get_iou_by_id(iou_id)
+        if not iou: 
+            return False, "Cuenta no encontrada.", 0.0, "Pending"
+        
+        current_amount = iou['current_amount']
+        current_status = iou['status']
+        iou_type = iou['type']
+        
+        # 2. Validación de Monto
+        if payment_amount > current_amount + 0.01:
+            return False, f"Monto excede saldo pendiente (${current_amount:,.2f}).", current_amount, current_status
+        
+        # 3. Calcular nuevo saldo
+        new_amount = current_amount - payment_amount
+        new_status = 'Pending'
+        
+        if new_amount <= 0.01: 
+            new_amount = 0.0
+            new_status = 'Paid'
+        elif new_amount < current_amount:
+            new_status = 'Partial'
+
+        # 4. Actualizar IOU
+        cursor.execute("UPDATE iou SET current_amount = ?, status = ? WHERE id = ?", (new_amount, new_status, iou_id))
+        
+        msg = f"Abono de ${payment_amount:,.2f} registrado."
+
+        # 5. Registrar Transacción (Si hay cuenta)
+        if account_id:
+            date_today = date.today().strftime('%Y-%m-%d')
+            trans_name = f"Abono IOU: {iou.get('name', 'N/A')}"
+            trans_type = 'Income' if iou_type == 'Receivable' else 'Expense'
+
+            # Manejo de Reserva vs Cuenta Normal
+            db_acc_id = None if account_id == 'RESERVE' else account_id
+            
+            cursor.execute("""
+                INSERT INTO transactions (date, name, amount, category, type, account_id) 
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (date_today, trans_name, payment_amount, 'Deudas/Cobros', trans_type, db_acc_id))
+
+            _adjust_account_balance(cursor, account_id, payment_amount, trans_type, is_reversal=False)
+            msg += " Movimiento registrado en cuenta."
+
+        conn.commit()
+        # ✅ ESTE ES EL RETORNO CLAVE DE 4 VALORES
+        return True, msg, new_amount, new_status
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"Error en make_iou_payment: {e}")
+        # ✅ EL BLOQUE DE ERROR TAMBIÉN DEBE RETORNAR 4 VALORES
+        return False, f"Error: {str(e)}", current_amount, current_status
+    finally:
+        conn.close()
+
+# backend/data_manager.py (AGREGAR AL FINAL)
+
+# backend/data_manager.py
+
+def process_card_payment(card_id, amount, source_id=None):
+    """
+    Procesa el pago de una tarjeta de crédito.
+    - card_id: ID de la tarjeta a pagar.
+    - amount: Monto a pagar.
+    - source_id: (Opcional) ID de la cuenta origen o "RESERVE". Si es None, es pago externo.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    date_today = date.today().strftime('%Y-%m-%d')
+    
+    try:
+        # 1. Validar Tarjeta
+        cursor.execute("SELECT name, current_balance FROM accounts WHERE id = ?", (card_id,))
+        res = cursor.fetchone()
+        if not res: return False, "Tarjeta no encontrada."
+        card_name, current_debt = res
+        
+        source_name = "Origen Externo" # Valor por defecto si no se selecciona cuenta
+        
+        # 2. Manejo del Origen de Fondos (SOLO SI SE SELECCIONÓ UNO)
+        if source_id:
+            if source_id == "RESERVE":
+                # A. PAGO DESDE RESERVA
+                cursor.execute("SELECT balance FROM abono_reserve WHERE id = 1")
+                res_res = cursor.fetchone()
+                reserve_bal = res_res[0] if res_res else 0.0
+                
+                if amount > reserve_bal + 0.01:
+                    return False, f"Saldo insuficiente en Reserva (${reserve_bal:,.2f})."
+                
+                new_reserve = reserve_bal - amount
+                cursor.execute("UPDATE abono_reserve SET balance = ? WHERE id = 1", (new_reserve,))
+                source_name = "Reserva de Abono"
+                
+            else:
+                # B. PAGO DESDE CUENTA BANCARIA
+                cursor.execute("SELECT name, current_balance, type FROM accounts WHERE id = ?", (source_id,))
+                res_acc = cursor.fetchone()
+                if not res_acc: return False, "Cuenta de origen no encontrada."
+                acc_name, acc_bal, acc_type = res_acc
+                
+                if amount > acc_bal + 0.01:
+                    return False, f"Saldo insuficiente en {acc_name} (${acc_bal:,.2f})."
+                
+                # Registrar GASTO en la cuenta de origen
+                _adjust_account_balance(cursor, source_id, amount, 'Expense', is_reversal=False)
+                
+                # Registrar transacción de salida
+                cursor.execute("""
+                    INSERT INTO transactions (date, name, amount, category, type, account_id) 
+                    VALUES (?, ?, ?, ?, 'Expense', ?)
+                """, (date_today, f"Pago a {card_name}", amount, "Transferencia/Pago", source_id))
+                
+                source_name = acc_name
+
+        # 3. APLICAR PAGO A LA TARJETA (Siempre ocurre)
+        _adjust_account_balance(cursor, card_id, amount, 'Income', is_reversal=False)
+        
+        # Registrar transacción de entrada en la tarjeta
+        cursor.execute("""
+            INSERT INTO transactions (date, name, amount, category, type, account_id) 
+            VALUES (?, ?, ?, ?, 'Income', ?)
+        """, (date_today, f"Pago desde {source_name}", amount, "Transferencia/Pago", card_id))
+        
+        conn.commit()
+        return True, f"Pago de ${amount:,.2f} aplicado ({source_name})."
+        
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error al procesar pago: {str(e)}"
     finally:
         conn.close()

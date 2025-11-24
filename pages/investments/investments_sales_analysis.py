@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import pandas as pd
 import json 
 from utils import ui_helpers 
+from io import StringIO
 
 # --- FUNCIONES AUXILIARES ---
 
@@ -297,9 +298,10 @@ def render_realized_pl_summary(json_history):
     df_sales = pd.DataFrame({'ticker': [], 'realized_pl': []})
     
     if json_history and json_history != '{}':
-        df_all = pd.read_json(json_history, orient='split')
+        # 🚨 CORRECCIÓN LÍNEA 300 🚨
+        df_all = pd.read_json(StringIO(json_history), orient='split')
         df_sales = df_all[df_all['type'] == 'SELL'][['ticker', 'realized_pl']].copy()
-    
+
     df_adjustments = dm.get_pl_adjustments_df()
     
     if not df_adjustments.empty:
@@ -358,8 +360,9 @@ def render_pl_pivot_table(json_history, json_assets_cache):
     # 1A. Ventas Realizadas (P/L Cerrado + Ajustes)
     df_sales_combined = pd.DataFrame()
     if json_history and json_history != '{}':
-        df_all = pd.read_json(json_history, orient='split')
-        df_sales_system = df_all[df_all['type'] == 'SELL'][['ticker', 'realized_pl']].copy() 
+        # 🚨 CORRECCIÓN LÍNEA 361 🚨
+        df_all = pd.read_json(StringIO(json_history), orient='split')
+        df_sales_system = df_all[df_all['type'] == 'SELL'][['ticker', 'realized_pl']].copy()
         
         df_adjustments = dm.get_pl_adjustments_df()
         df_sales_combined = pd.concat([df_sales_system, df_adjustments], ignore_index=True)

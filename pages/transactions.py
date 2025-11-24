@@ -1,3 +1,4 @@
+# transactions.py
 import dash
 from dash import dcc, html, callback, Input, Output, State, no_update, ctx 
 import dash_bootstrap_components as dbc
@@ -120,71 +121,97 @@ layout = dbc.Container([
     html.H2("Registro de Transacciones", className="mb-4"),
 
     dbc.Row([
-        # --- COLUMNA IZQUIERDA: FORMULARIO ---
+        # --- COLUMNA IZQUIERDA: FORMULARIO COMPACTO ---
         dbc.Col([
             dbc.Card([
                 dbc.CardHeader("Nueva Transacción"),
+                # pages/transactions.py (Contenido del dbc.CardBody del Formulario)
+
                 dbc.CardBody([
-                    # 1. Fecha y Tipo
+                    
+                    # FILA 1: Fecha | Tipo | Monto (Todo en una línea)
                     dbc.Row([
                         dbc.Col([
-                            dbc.Label("Fecha"),
-                            dcc.DatePickerSingle(id='input-date', date=date.today(), display_format='YYYY-MM-DD', className='mb-3 d-block'),
+                            dbc.Label("Fecha", className="small mb-0"),
+                            dcc.DatePickerSingle(id='input-date', date=date.today(), display_format='YYYY-MM-DD', className='d-block w-100 small-date-picker'),
+                        ], width=4),
+                        dbc.Col([
+                            dbc.Label("Tipo", className="small mb-0"),
+                            html.Div(
+                                dbc.RadioItems(id="input-trans-type", options=[{"label": "Gasto", "value": "Expense"}, {"label": "Ingreso", "value": "Income"}], value="Expense", inline=True, className="small"),
+                                className="mt-1"
+                            )
+                        ], width=4),
+                        dbc.Col([
+                            dbc.Label("Monto $", className="small mb-0 fw-bold text-info"),
+                            dbc.Input(id="input-amount", placeholder="0.00", type="number", size="sm"),
+                        ], width=4)
+                    ], className="mb-2 g-2"), 
+
+                    # FILA 2: Cuenta | Detalle
+                    dbc.Row([
+                        dbc.Col([
+                            dbc.Label("Cuenta", className="small mb-0"),
+                            dcc.Dropdown(id="input-account-dd", placeholder="Seleccionar...", className="text-dark small-dropdown"),
                         ], width=6),
                         dbc.Col([
-                             dbc.Label("Tipo"),
-                             dbc.RadioItems(id="input-trans-type", options=[{"label": "Gasto", "value": "Expense"}, {"label": "Ingreso", "value": "Income"}], value="Expense", inline=True, className="mb-3"),
-                        ], width=6)
-                    ]),
+                            dbc.Label("Nota / Detalle", className="small mb-0"),
+                            dbc.Input(id="input-name", placeholder="Ej. Cena...", type="text", size="sm"),
+                        ], width=6),
+                    ], className="mb-2 g-2"),
 
-                    # 2. Categoría
+                    # FILA 3: Categoría | Subcategoría (CORREGIDA)
                     dbc.Row([
+                        # Categoría + Botón
                         dbc.Col([
-                            dbc.Label("Categoría"),
-                            dcc.Dropdown(id="input-category", placeholder="Seleccionar...", className="text-dark"),
-                        ], width=10),
+                            dbc.Label("Categoría", className="small mb-0"),
+                            dbc.Row([
+                                dbc.Col(
+                                    dcc.Dropdown(id="input-category", placeholder="Ver...", className="text-dark small-dropdown"), 
+                                    width=10
+                                ),
+                                dbc.Col(
+                                    dbc.Button("+", id="btn-open-cat-modal", color="primary", outline=True, size="sm", className="w-100"), 
+                                    width=2,
+                                    className="d-grid ps-1" # ps-1 añade un pequeño margen para separar
+                                )
+                            ], className="g-0 align-items-end") # g-0 asegura que no haya espacio entre el dropdown y el botón
+                        ], width=6),
+                        
+                        # Subcategoría + Botón
                         dbc.Col([
-                            dbc.Button("+", id="btn-open-cat-modal", color="primary", outline=True, size="sm", className="mt-4 w-100", title="Crear categoría"),
-                        ], width=2, className="ps-0")
-                    ], className="mb-3"),
-
-                    # 3. Subcategoría
-                    dbc.Row([
-                        dbc.Col([
-                            dbc.Label("Subcategoría"),
-                            dcc.Dropdown(id="input-subcategory", placeholder="Seleccionar...", className="text-dark"),
-                        ], width=10),
-                        dbc.Col([
-                            dbc.Button("+", id="btn-open-subcat-modal", color="info", outline=True, size="sm", className="mt-4 w-100", title="Crear subcategoría"),
-                        ], width=2, className="ps-0")
-                    ], className="mb-3"),
-                    
-                    # 4. Detalle
-                    dbc.Label("Detalle / Nota (Opcional)"),
-                    dbc.Input(id="input-name", placeholder="Ej. Cena con amigos...", type="text", className="mb-3"),
-
-                    # 5. Cuenta (ROW PROPIA)
-                    dbc.Label("Cuenta de Pago/Destino"),
-                    dcc.Dropdown(id="input-account-dd", placeholder="Seleccionar cuenta...", className="mb-3 text-dark"),
-
-                    # 6. Monto (ROW PROPIA)
-                    dbc.Label("Monto"),
-                    dbc.Input(id="input-amount", placeholder="0.00", type="number", className="mb-4"),
+                            dbc.Label("Subcategoría", className="small mb-0"),
+                            dbc.Row([
+                                dbc.Col(
+                                    dcc.Dropdown(id="input-subcategory", placeholder="Ver...", className="text-dark small-dropdown"), 
+                                    width=10
+                                ),
+                                dbc.Col(
+                                    dbc.Button("+", id="btn-open-subcat-modal", color="info", outline=True, size="sm", className="w-100"), 
+                                    width=2,
+                                    className="d-grid ps-1"
+                                )
+                            ], className="g-0 align-items-end")
+                        ], width=6),
+                    ], className="mb-4 g-2"),
 
                     # 7. Botón Registrar
-                    dbc.Button("Registrar Transacción", id="btn-add-trans", color="success", className="w-100 py-2 fw-bold"),
-                    html.Div(id="msg-add-trans", className="mt-2 text-center")
+                    dbc.Button("Registrar Transacción", id="btn-add-trans", color="success", className="w-100 fw-bold", size="md"),
+                    html.Div(id="msg-add-trans", className="mt-1 text-center small")
                 ])
             ], className="data-card")
-        ], lg=4, md=12, className="mb-4"),
+        ], lg=5, md=12, className="mb-4"), # Aumentamos ancho a 5
 
+        # --- COLUMNA DERECHA: TABLA ---
         # --- COLUMNA DERECHA: TABLA ---
         dbc.Col([
             dbc.Card([
                 dbc.CardHeader("Últimos Movimientos"),
-                dbc.CardBody(id="trans-table-container")
-            ], className="data-card h-100") 
-        ], lg=8, md=12)
+                # 🚨 ESTILO APLICADO AL CARD BODY 🚨
+                dbc.CardBody(id="trans-table-container", 
+                            style={"padding": "0", "maxHeight": "50vh", "overflowY": "auto"}) 
+            ],) 
+        ], lg=7, md=12) # lg=7 (Tabla)
     ])
 ], fluid=True, className="page-container")
 
@@ -192,12 +219,10 @@ layout = dbc.Container([
 # --- FUNCIONES AUXILIARES GLOBALES (TABLA ACTUALIZADA) ---
 def generate_table(dataframe):
     if dataframe.empty:
-        # Placeholder vacío: Usamos 'category' para el mensaje
         data_to_render = [{'id': -1, 'category': 'No hay transacciones registradas.', 'subcategory': '', 'amount': 0.0, 'action': 'N/A'}]
         is_empty = True
     else:
         dataframe['action'] = "ℹ️"
-        # Asegurar que si no hay subcategoría, muestre un guion o vacío para que no se rompa
         dataframe['subcategory'] = dataframe['subcategory'].fillna('')
         data_to_render = dataframe.to_dict('records')
         is_empty = False
@@ -210,7 +235,6 @@ def generate_table(dataframe):
         data=data_to_render,
         columns=[
             {"name": "ID", "id": "id"}, 
-            # NUEVAS COLUMNAS
             {"name": "Categoría", "id": "category"},
             {"name": "Subcategoría", "id": "subcategory"},
             {"name": "Monto", "id": "amount", "type": "numeric", "format": {"specifier": "$,.2f"}},
@@ -221,12 +245,12 @@ def generate_table(dataframe):
         style_table={'overflowX': 'auto', 'minWidth': '100%'},
         style_cell={
             'textAlign': 'left', 'border': '1px solid #444', 'whiteSpace': 'normal', 
-            'overflow': 'hidden', 'textOverflow': 'ellipsis' 
+            'overflow': 'hidden', 'textOverflow': 'ellipsis', 'padding': '8px'
         },
         style_data_conditional=[
             {'if': {'column_id': 'id'}, 'display': 'none'},
             
-            # Estilos para el mensaje "No data" en la primera fila
+            # Estilos para el mensaje "No data"
             {'if': {'row_index': 0, 'filter_query': '{id} = -1'}, 'color': '#888', 'fontStyle': 'italic', 'height': '60px'},
             {'if': {'row_index': 0, 'filter_query': '{id} = -1', 'column_id': 'amount'}, 'display': 'none'},
             {'if': {'row_index': 0, 'filter_query': '{id} = -1', 'column_id': 'action'}, 'display': 'none'},
@@ -235,7 +259,7 @@ def generate_table(dataframe):
             {'if': {'filter_query': '{type} = "Income"'}, 'color': '#00C851', 'fontWeight': 'bold'},
             {'if': {'filter_query': '{type} = "Expense"'}, 'color': '#ff4444', 'fontWeight': 'bold'},
             
-            {'if': {'column_id': 'action'}, 'textAlign': 'center', 'cursor': 'pointer', 'fontWeight': 'bold'}
+            {'if': {'column_id': 'action'}, 'textAlign': 'center', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#33b5e5'}
         ],
         style_header_conditional=[{'if': {'column_id': 'id'}, 'display': 'none'}],
         page_size=10,

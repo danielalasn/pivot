@@ -132,6 +132,23 @@ def ensure_db_structure():
             description TEXT -- Para saber si fue ajuste manual
         );
         """)
+    
+    # ... (otras tablas) ...
+
+    # 10. CACHÉ DE PRECIOS DE MERCADO (NUEVO)
+    # Guarda el último precio conocido para no llamar a la API constantemente
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS market_cache (
+        ticker TEXT PRIMARY KEY,
+        price REAL NOT NULL,
+        prev_close REAL DEFAULT 0.0,
+        company_name TEXT,
+        sector TEXT,
+        last_updated TEXT NOT NULL
+    );
+    """)
+    
+    print("Tabla 'market_cache' verificada.")
 
     # 🚨 LIMPIEZA: Eliminar la tabla antigua si existe
     try:

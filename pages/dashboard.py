@@ -1,6 +1,6 @@
 # pages/dashboard.py
 import dash
-from dash import dcc, html, callback, Input, Output
+from dash import dcc, html, callback, Input, Output, ctx
 import plotly.graph_objects as go
 import plotly.express as px
 import dash_bootstrap_components as dbc
@@ -13,13 +13,29 @@ from datetime import date
 # ------------------------------------------------------------------------------
 layout = dbc.Container(
     [
-        # Título
+        # Título Principal
         dbc.Row([
             dbc.Col(html.H2("Resumen Financiero Global", className="mb-4"), width=12)
         ]),
 
-        # --- FILA 1: PATRIMONIO (KPIs) ---
-        html.H5("Mi Patrimonio", className="text-primary mb-3"),
+        # --- FILA 1: PATRIMONIO (KPIs) CON BOTÓN DE REFRESCO ---
+        dbc.Row([
+            dbc.Col(html.H5("Mi Patrimonio", className="text-primary mb-0"), width="auto", className="d-flex align-items-center"),
+            dbc.Col([
+                # BOTÓN DE REFRESCO DE INVERSIONES
+                dbc.Button(
+                    html.I(className="bi bi-arrow-clockwise"), 
+                    id="btn-refresh-investments", 
+                    color="link", 
+                    size="sm", 
+                    className="p-0 ms-2 text-decoration-none text-muted",
+                    title="Actualizar precios de mercado ahora"
+                ),
+                # ETIQUETA DE FECHA DE ACTUALIZACIÓN
+                html.Small(id="last-updated-label", className="text-muted ms-2 small fst-italic")
+            ], width="auto", className="d-flex align-items-center"),
+        ], className="mb-3 align-items-center"),
+
         dbc.Row([
             # 1. PATRIMONIO NETO (Total)
              dbc.Col(
@@ -43,6 +59,13 @@ layout = dbc.Container(
                             dbc.Col("Bancos/Efectivo:", className="text-muted"),
                             dbc.Col(id="nw-assets-liquid", className="text-end fw-bold")
                         ], className="mb-1"),
+                        
+                        # NUEVA FILA: INVERSIONES
+                        dbc.Row([
+                            dbc.Col("Inversiones:", className="text-muted"),
+                            dbc.Col(id="nw-assets-investments", className="text-end fw-bold text-info")
+                        ], className="mb-1"),
+
                         dbc.Row([
                             dbc.Col("Por Cobrar (IOU):", className="text-muted"),
                             dbc.Col(id="nw-assets-receivable", className="text-end fw-bold")
@@ -78,18 +101,15 @@ layout = dbc.Container(
             dbc.Col(
                 dbc.Card(
                     dbc.CardBody([
-                        # CABECERA: Título y Selector de Fechas
                         dbc.Row([
                             dbc.Col(html.H5("Evolución Histórica del Patrimonio", className="card-title"), width=7),
                             dbc.Col(
                                 dcc.DatePickerRange(
                                     id='nw-date-picker',
-                                    display_format='DD/MM/YYYY', # Formato más compacto
-                                    # FECHAS POR DEFECTO: Inicio de Año -> Hoy
+                                    display_format='DD/MM/YYYY', 
                                     start_date=None,
                                     end_date=date.today(),
                                     className="float-end",
-                                    # ESTILO PARA HACERLO MÁS PEQUEÑO
                                     style={'transform': 'scale(0.85)', 'transformOrigin': 'top right', 'zIndex': 100}
                                 ), width=5
                             )
@@ -106,7 +126,6 @@ layout = dbc.Container(
         # --- FILA 2: MONITOR MENSUAL (KPIs) ---
         html.H5("Monitor del Mes Actual", className="text-info mb-3"),
         dbc.Row([
-            # Ingresos Mes
             dbc.Col(
                 dbc.Card(
                     dbc.CardBody([
@@ -118,7 +137,6 @@ layout = dbc.Container(
                 ),
                 lg=6, md=6, sm=12, className="mb-4"
             ),
-            # Gastos Mes
             dbc.Col(
                 dbc.Card(
                     dbc.CardBody([
@@ -134,7 +152,6 @@ layout = dbc.Container(
 
         # --- FILA 3: GRÁFICOS INFERIORES ---
         dbc.Row([
-            # Gráfico Histórico
             dbc.Col(
                 dbc.Card(
                     dbc.CardBody([
@@ -146,7 +163,6 @@ layout = dbc.Container(
                 lg=8, md=12, sm=12, className="mb-4"
             ),
 
-            # Gráfico Categorías
             dbc.Col(
                 dbc.Card(
                     dbc.CardBody([
@@ -171,6 +187,7 @@ layout = dbc.Container(
      Output("nw-total", "className"),
      Output("nw-assets-total", "children"),
      Output("nw-assets-liquid", "children"),
+     Output("nw-assets-investments", "children"), # Output Inversiones
      Output("nw-assets-receivable", "children"),
      Output("nw-liabilities-total", "children"),
      Output("nw-liabilities-credit", "children"),
@@ -181,47 +198,43 @@ layout = dbc.Container(
      Output("kpi-month-label-exp", "children"),
      Output("graph-cashflow", "figure"),
      Output("graph-categories", "figure"),
-     Output("graph-networth-history", "figure")],
+     Output("graph-networth-history", "figure"),
+     Output("last-updated-label", "children")],   # Output Fecha Actualización
     [Input("url", "pathname"),
      Input("nw-date-picker", "start_date"), 
-     Input("nw-date-picker", "end_date")]   
+     Input("nw-date-picker", "end_date"),
+     Input("btn-refresh-investments", "n_clicks")] # Input Botón Refresco
 )
-def update_dashboard(pathname, start_date, end_date):
+def update_dashboard(pathname, start_date, end_date, n_refresh):
     if pathname != "/":
-        return [dash.no_update] * 15
+        return [dash.no_update] * 17
 
-    # --- LÓGICA DE FECHAS DINÁMICA ---
-    # Cargamos transacciones aquí porque las necesitamos para validar la fecha
+    # --- LÓGICA DE REFRESCO ---
+    # Detectamos si el usuario presionó el botón de refresco
+    ctx_id = ctx.triggered_id
+    force_refresh = (ctx_id == "btn-refresh-investments")
+
+    # --- LÓGICA DE FECHAS ---
     df_trans = dm.get_transactions_df()
-    
-    if not end_date: 
-        end_date = date.today()
-
+    if not end_date: end_date = date.today()
     if not start_date:
         today = date.today()
         jan_first = date(today.year, 1, 1)
-        
-        # Por defecto asumimos el 1 de Enero
         calc_start = jan_first
-        
         if not df_trans.empty:
-            # Obtenemos la fecha de la primera transacción registrada
             first_data_date = pd.to_datetime(df_trans['date']).dt.date.min()
-            
-            # TU CONDICIÓN:
-            # "Si el primer dato es despues del primer dia del año, el start date sera la primera fecha"
             if first_data_date > jan_first:
                 calc_start = first_data_date
-            # "Si no (es antes o igual), pues el primer dia del año" (se mantiene jan_first)
-            
         start_date = calc_start
 
+    # 1. DATOS DE PATRIMONIO (Aquí pasamos el force_refresh)
+    # Esto hace que dm.get_stocks_data decida si llamar a la API o usar la DB
+    nw_data = dm.get_net_worth_breakdown(force_refresh=force_refresh)
+    
+    # Obtenemos la fecha de la última actualización de la DB
+    last_ts = dm.get_data_timestamp()
+    update_label = f"Precios Inversiones: {last_ts}"
 
-    # 1. DATOS DE PATRIMONIO
-    nw_data = dm.get_net_worth_breakdown()
-
-    # 1. DATOS DE PATRIMONIO
-    nw_data = dm.get_net_worth_breakdown()
     net_worth = nw_data['net_worth']
     
     # Formateo Strings
@@ -230,26 +243,23 @@ def update_dashboard(pathname, start_date, end_date):
     
     assets_str = f"${nw_data['assets']['total']:,.2f}"
     liquid_str = f"${nw_data['assets']['liquid']:,.2f}"
+    inv_str = f"${nw_data['assets']['investments']:,.2f}"
     recv_str = f"${nw_data['assets']['receivables']:,.2f}"
     
     liab_str = f"${nw_data['liabilities']['total']:,.2f}"
     credit_str = f"${nw_data['liabilities']['credit_cards']:,.2f}"
     pay_str = f"${nw_data['liabilities']['payables']:,.2f}"
 
-
-    # 2. GRÁFICO COMBO: EVOLUCIÓN DIARIA (CON FILTRO)
-    # Si no hay fechas seleccionadas (al inicio antes de cargar), poner defaults
+    # 2. GRÁFICO COMBO: EVOLUCIÓN DIARIA
     if not start_date: start_date = date(date.today().year, 1, 1)
     if not end_date: end_date = date.today()
 
     df_history = dm.get_historical_networth_trend(str(start_date), str(end_date))
     
     fig_nw = go.Figure()
-    
     if df_history.empty:
         fig_nw.update_layout(title="Sin datos históricos suficientes", template="plotly_dark")
     else:
-        # Barra: Cambio Diario
         fig_nw.add_trace(go.Bar(
             x=df_history['date'], 
             y=df_history['net_change'],
@@ -257,8 +267,6 @@ def update_dashboard(pathname, start_date, end_date):
             marker_color=df_history['net_change'].apply(lambda x: '#00C851' if x >= 0 else '#ff4444'),
             opacity=0.4
         ))
-
-        # Línea: Patrimonio Total
         fig_nw.add_trace(go.Scatter(
             x=df_history['date'], 
             y=df_history['net_worth'],
@@ -267,7 +275,6 @@ def update_dashboard(pathname, start_date, end_date):
             line=dict(color='#33b5e5', width=3),
             marker=dict(size=5)
         ))
-        
         fig_nw.update_layout(
             template="plotly_dark",
             plot_bgcolor="rgba(0,0,0,0)",
@@ -280,7 +287,6 @@ def update_dashboard(pathname, start_date, end_date):
             hoverlabel=dict(bgcolor="#333333", font_size=13, font_color="white")
         )
 
-
     # 3. CÁLCULOS DEL MES ACTUAL
     df_trans = dm.get_transactions_df()
     today = date.today()
@@ -290,14 +296,30 @@ def update_dashboard(pathname, start_date, end_date):
 
     if not df_trans.empty:
         df_trans['date_dt'] = pd.to_datetime(df_trans['date'])
+        
+        # Filtramos solo el mes actual
         df_current = df_trans[(df_trans['date_dt'].dt.month == today.month) & (df_trans['date_dt'].dt.year == today.year)]
-        month_income = df_current[df_current['type'] == 'Income']['amount'].sum()
-        month_expense = df_current[df_current['type'] == 'Expense']['amount'].sum()
+        
+        # 🚨 CORRECCIÓN: Excluir categorías de movimientos internos
+        # Asumiendo que usas 'Transferencia/Pago' o 'Deudas/Cobros' para movimientos internos que no son ingresos reales
+        # Ajusta la lista ['Transferencia/Pago'] según las categorías exactas que usa tu sistema para estos movimientos.
+        
+        df_real_income = df_current[
+            (df_current['type'] == 'Income') & 
+            (~df_current['category'].isin(['Transferencia/Pago', 'Deudas/Cobros'])) # Excluir estas
+        ]
+        
+        df_real_expense = df_current[
+            (df_current['type'] == 'Expense') & 
+            (~df_current['category'].isin(['Transferencia/Pago', 'Deudas/Cobros'])) # Excluir estas
+        ]
+
+        month_income = df_real_income['amount'].sum()
+        month_expense = df_real_expense['amount'].sum()
 
     income_str = f"${month_income:,.2f}"
     expense_str = f"${month_expense:,.2f}"
     label_month = f"Total en {current_month_name}"
-
 
     # 4. GRÁFICOS INFERIORES
     df_summary = dm.get_monthly_summary()
@@ -318,7 +340,7 @@ def update_dashboard(pathname, start_date, end_date):
         fig_pie = px.pie(df_cats, names="category", values="amount", hole=0.5, color_discrete_sequence=px.colors.qualitative.Pastel)
         fig_pie.update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", legend_orientation="h", legend_y=-0.1)
 
-    return (nw_str, nw_class, assets_str, liquid_str, recv_str, 
+    return (nw_str, nw_class, assets_str, liquid_str, inv_str, recv_str, 
             liab_str, credit_str, pay_str, 
             income_str, label_month, expense_str, label_month, 
-            fig_cashflow, fig_pie, fig_nw)
+            fig_cashflow, fig_pie, fig_nw, update_label)
