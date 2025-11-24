@@ -8,12 +8,15 @@ from app import app, server
 # Importar los layouts de las páginas
 from pages import dashboard, transactions, debts
 from pages.accounts import accounts 
-from pages.investments import investments_assets
+
+# 🚨 CAMBIO 1: Importamos el archivo 'padre' que tiene las tabs
+from pages.investments import investments 
+
 # ------------------------------------------------------------------------------
 # 1. CONTENIDO DEL OFFCANVAS (Sidebar)
 # ------------------------------------------------------------------------------
 
-# Lista de enlaces de navegación (Igual que antes)
+# Lista de enlaces de navegación
 nav_links = [
     dbc.NavLink([html.I(className="bi bi-house me-2"), "Dashboard"], href="/", active="exact"),
     dbc.NavLink([html.I(className="bi bi-receipt me-2"), "Transacciones"], href="/transacciones", active="exact"),
@@ -27,16 +30,15 @@ nav_links = [
 # Contenido del Offcanvas
 offcanvas_content = html.Div(
     [
-        # --- NUEVO ENCABEZADO PERSONALIZADO CON ESPACIO PARA LA 'X' ---
-        # La 'X' de cerrar está fuera de este div, pero el CSS la moverá.
-        html.H1("Pívot", className="offcanvas-header-title-custom"), # <--- Este es el nuevo título
+        # Encabezado personalizado
+        html.H1("Pívot", className="offcanvas-header-title-custom"),
 
         html.Hr(className="sidebar-divider"),
         
-        # --- NAVEGACIÓN ---
+        # Navegación
         dbc.Nav(nav_links, vertical=True, pills=True, id="nav-list"), 
         
-        # --- SWITCH DE TEMA ---
+        # Switch de tema
         html.Div([
             dbc.Label("Modo Claro", html_for="theme-switch", className="text-muted small mb-1"),
             dbc.Switch(
@@ -52,18 +54,16 @@ offcanvas_content = html.Div(
 )
 
 # ------------------------------------------------------------------------------
-# 2. NAVBAR (Encabezado Fijo, SOLO TÍTULO Y BOTÓN)
+# 2. NAVBAR (Encabezado Fijo)
 # ------------------------------------------------------------------------------
 navbar = dbc.Navbar(
     dbc.Container(
         [
-            # Contenedor para el Botón y el Título (Simplificado)
             dbc.Row(
                 [
-                    # 1. Botón Hamburguesa (Ahora el icono *debería* aparecer si Step 1 está hecho)
+                    # Botón Hamburguesa
                     dbc.Col(
                         dbc.Button(
-                            # El icono de hamburguesa
                             html.I(className="bi bi-list text-white", style={"fontSize": "1.8rem"}), 
                             id="open-offcanvas-btn",
                             n_clicks=0,
@@ -74,7 +74,7 @@ navbar = dbc.Navbar(
                         className="d-flex align-items-center me-2"
                     ),
                     
-                    # 2. Título (Pívot)
+                    # Título
                     dbc.Col(
                         html.A(
                             html.H1(
@@ -90,52 +90,40 @@ navbar = dbc.Navbar(
                     ),
                 ],
                 align="center",
-                # IMPORTANTE: Cambiamos 'w-100' por 'flex-grow-1' para que no ocupe todo el ancho si no es necesario.
                 className="g-0 flex-grow-1", 
             ),
-
-            # Componente vacío a la derecha para rellenar (si es necesario)
             html.Div(className="ms-auto")
-            
         ],
         fluid=True,
         className="px-3 py-2" 
     ),
-    
-    # Damos el ID para aplicar el estilo de gradiente en CSS
     id="main-navbar",
     color="dark",
     dark=True,
     fixed="top", 
-    style={"zIndex": 1020, "borderBottom": "none"} # Quitamos el borde
+    style={"zIndex": 1020, "borderBottom": "none"} 
 )
 
 
 # ------------------------------------------------------------------------------
-# LAYOUT PRINCIPAL Y NAVEGACIÓN
+# LAYOUT PRINCIPAL
 # ------------------------------------------------------------------------------
 app.layout = html.Div([
     dcc.Location(id="url", refresh=False),
     dcc.Store(id="theme-store"), 
     
-    # 1. Encabezado Fijo
     navbar, 
     
-    # 2. Contenido de la página (con margen superior)
     html.Div(id="page-content", className="main-content"),
     
-    # 3. Offcanvas 
     dbc.Offcanvas(
         offcanvas_content,
         id="offcanvas-sidebar",
-        title="", # <--- IMPORTANTE: Dejamos el título vacío para ocultar el "Menú" nativo
+        title="", 
         is_open=False,
         placement="start",
         scrollable=True,
-        # Usamos la clase 'offcanvas-custom' para aplicar el fondo oscuro/gradiente
         className="offcanvas-custom",
-        # El Offcanvas ya es oscuro por defecto, lo forzamos a ser claro para que el texto sea visible
-        # El CSS forzará el fondo a ser oscuro y el texto a ser blanco.
         backdrop=True 
     ),
     
@@ -143,10 +131,9 @@ app.layout = html.Div([
 
 
 # ------------------------------------------------------------------------------
-# CALLBACKS (se mantienen igual)
+# CALLBACKS
 # ------------------------------------------------------------------------------
 
-# CALLBACK PARA ABRIR/CERRAR EL OFFCANVAS Y CERRAR AL NAVEGAR
 @app.callback(
     Output("offcanvas-sidebar", "is_open"),
     [Input("open-offcanvas-btn", "n_clicks"), 
@@ -183,7 +170,7 @@ clientside_callback(
 
 
 # ------------------------------------------------------------------------------
-# CALLBACK PARA RENDERIZAR PÁGINAS (SE MANTIENE IGUAL)
+# CALLBACK PARA RENDERIZAR PÁGINAS
 # ------------------------------------------------------------------------------
 @app.callback(
     Output("page-content", "children"),
@@ -201,7 +188,11 @@ def display_page(pathname):
     elif pathname == "/metas":
         return html.P("Página de Metas (en construcción)")
     elif pathname == "/inversiones":
-        return investments_assets.layout
+        # 🚨 CAMBIO 2: Llamamos al layout 'padre' (investments.layout) 
+        # que contiene las pestañas, no al 'hijo' (assets)
+        return investments.layout
+    elif pathname == "/consejos":
+         return html.P("Página de Consejos (en construcción)")
     
     return dbc.Container(
         [
