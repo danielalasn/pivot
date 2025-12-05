@@ -208,8 +208,39 @@ layout = dbc.Container([
 
     html.Div(id="main-dashboard-view", style={"display": "none"}, children=[
         
-        # 1. DASHBOARD RESUMEN DE PORTAFOLIO (KPIs)
-        html.H4("Resumen del Portafolio", className="mb-3 text-info"),
+        dbc.Row([
+            dbc.Col(
+                html.H4("Resumen del Portafolio", className="text-info mb-0"), 
+                width="auto", 
+                className="d-flex align-items-center"
+            ),
+            
+            dbc.Col([
+                # COMPONENTE DE CARGA (Loading)
+                dcc.Loading(
+                    id="loading-refresh-inv",
+                    type="circle",
+                    color="#2A9FD6",
+                    children=[
+                        html.Div([
+                            dbc.Button(
+                                html.I(className="bi bi-arrow-clockwise"), 
+                                id="btn-refresh-investments", 
+                                color="link", 
+                                size="sm", 
+                                className="p-0 ms-2 text-decoration-none text-muted fs-5",
+                                title="Actualizar precios ahora"
+                            ),
+                            # ETIQUETA DE FECHA (Se actualiza con la DB)
+                            html.Small(id="last-updated-inv-label", className="text-muted ms-2 small fst-italic")
+                        ], className="d-flex align-items-center")
+                    ]
+                )
+            ], width="auto", className="d-flex align-items-center ms-auto"),
+        ], className="mb-3 align-items-center"),
+        
+        # 🚨 AQUÍ ESTABA EL ERROR: FALTABA ESTA FILA 🚨
+        # Esta es la fila donde el callback inyecta los cuadros de KPIs (Valor Total, P/L, etc.)
         dbc.Row(id="assets-summary-row", className="g-4 mb-4"), 
         
         # 2. GRÁFICOS PIE
@@ -284,17 +315,34 @@ layout = dbc.Container([
 # ------------------------------------------------------------------------------
 
 # 0. Callback Inicial/Actualización: Llama a la API y guarda el DF en el Store.
+# 0. Callback Inicial/Actualización: Llama a la API y guarda el DF en el Store.
+# 0. Callback Inicial/Actualización: Llama a la API y guarda el DF en el Store.
 @callback(
-    Output('assets-data-cache', 'data'),
+    [Output('assets-data-cache', 'data'),
+     Output('last-updated-inv-label', 'children')], 
     [Input('url', 'pathname'),
-     Input('asset-update-signal', 'data')],
+     Input('asset-update-signal', 'data'),
+     Input('btn-refresh-investments', 'n_clicks')], 
     prevent_initial_call=False
 )
-def fetch_and_cache_assets(pathname, signal):
+def fetch_and_cache_assets(pathname, signal, refresh_clicks):
+    # Detectar si fue clic manual
+    force = False
+    if ctx.triggered_id == "btn-refresh-investments":
+        force = True
+        
     if pathname == "/inversiones":
-        stocks_list = dm.get_stocks_data()
-        return json.dumps(stocks_list)
-    return no_update
+        # 1. Obtener datos (se forza refresh si es clic manual)
+        stocks_list = dm.get_stocks_data(force_refresh=force)
+        
+        # 2. Obtener la fecha REAL de la base de datos
+        timestamp = dm.get_data_timestamp()
+        label_text = f"Actualizado: {timestamp}"
+        
+        return json.dumps(stocks_list), label_text
+        
+    return no_update, no_update
+
 
 # 1. Abrir/Cerrar Modal Agregar
 @callback(
@@ -543,13 +591,14 @@ def render_asset_cards(json_assets, sort_value, active_tab):
     df_stocks = pd.DataFrame(stocks)
     
     # 1. Mapeo de Tipos de Activos para el filtrado
+    # Usamos 'asset_type' directo porque el backend ya lo corrigió
     df_stocks['Display_Type'] = df_stocks['asset_type'].apply(lambda x: 
         'ETF' if x == 'ETF' else (
         'CRYPTO_FOREX' if x == 'CRYPTO_FOREX' else (
         'STOCK' if x == 'Stock' else 'OTHER'))
     )
 
-    # 2. Lógica de Filtrado por Pestaña
+    # 2. Filtrado por Pestaña
     if active_tab == 'tab-stocks':
         df_stocks = df_stocks[df_stocks['Display_Type'] == 'STOCK']
     elif active_tab == 'tab-etfs':
@@ -560,87 +609,66 @@ def render_asset_cards(json_assets, sort_value, active_tab):
         df_stocks = df_stocks[df_stocks['Display_Type'] == 'OTHER']
     
     if df_stocks.empty:
-        tab_name = active_tab.replace('tab-', '').replace('-', ' ').title()
-        return html.Div(f"No hay activos del tipo '{tab_name}' registrados o no han sido clasificados.", className="text-muted text-center p-4")
+        return html.Div("No hay activos en esta categoría.", className="text-muted text-center p-4")
 
-
-    # 3. Lógica de Ordenación
-    if sort_value == 'ticker_asc':
-        df_stocks = df_stocks.sort_values(by='ticker', ascending=True)
-    elif sort_value == 'ticker_desc':
-        df_stocks = df_stocks.sort_values(by='ticker', ascending=False)
-    elif sort_value == 'market_value_desc':
-        df_stocks = df_stocks.sort_values(by='market_value', ascending=False)
-    elif sort_value == 'market_value_asc':
-        df_stocks = df_stocks.sort_values(by='market_value', ascending=True)
-    elif sort_value == 'day_change_pct_desc':
-        df_stocks = df_stocks.sort_values(by='day_change_pct', ascending=False)
-    elif sort_value == 'day_change_pct_asc':
-        df_stocks = df_stocks.sort_values(by='day_change_pct', ascending=True)
-    elif sort_value == 'total_gain_pct_desc':
-        df_stocks = df_stocks.sort_values(by='total_gain_pct', ascending=False)
-    elif sort_value == 'total_gain_pct_asc':
-        df_stocks = df_stocks.sort_values(by='total_gain_pct', ascending=True)
+    # 3. Ordenación (Igual que antes)
+    if sort_value == 'ticker_asc': df_stocks = df_stocks.sort_values(by='ticker', ascending=True)
+    elif sort_value == 'ticker_desc': df_stocks = df_stocks.sort_values(by='ticker', ascending=False)
+    elif sort_value == 'market_value_desc': df_stocks = df_stocks.sort_values(by='market_value', ascending=False)
+    elif sort_value == 'market_value_asc': df_stocks = df_stocks.sort_values(by='market_value', ascending=True)
+    elif sort_value == 'day_change_pct_desc': df_stocks = df_stocks.sort_values(by='day_change_pct', ascending=False)
+    elif sort_value == 'day_change_pct_asc': df_stocks = df_stocks.sort_values(by='day_change_pct', ascending=True)
+    elif sort_value == 'total_gain_pct_desc': df_stocks = df_stocks.sort_values(by='total_gain_pct', ascending=False)
+    elif sort_value == 'total_gain_pct_asc': df_stocks = df_stocks.sort_values(by='total_gain_pct', ascending=True)
         
     # 4. Generar las tarjetas
     cards = []
     for index, s in df_stocks.iterrows(): 
-        # --- CÁLCULOS DE VISUALIZACIÓN ---
         total_color = "text-success" if s['total_gain'] >= 0 else "text-danger"
-        total_sign = "" if s['total_gain'] >= 0 else ""
+        total_sign = "+" if s['total_gain'] >= 0 else ""
+        day_color = "text-success" if s['day_change_pct'] >= 0 else "text-danger"
+        day_sign = "+" if s['day_change_pct'] >= 0 else ""
         
-        day_pct = s['day_change_pct']
-        day_color = "text-success" if day_pct >= 0 else "text-danger"
-        day_sign = "+" if day_pct >= 0 else ""
-        
-        if (1 + day_pct/100) != 0:
-            prev_val = s['market_value'] / (1 + day_pct/100)
+        # Ganancia diaria en $
+        if (1 + s['day_change_pct']/100) != 0:
+            prev_val = s['market_value'] / (1 + s['day_change_pct']/100)
             day_gain_usd = s['market_value'] - prev_val
-        else:
-            day_gain_usd = 0.0
+        else: day_gain_usd = 0.0
 
-        display_name = s['name'] if s['name'] != s['ticker'] else ""
+        # --- CAMBIO CLAVE AQUÍ: Usar 'display_ticker' ---
+        display_ticker = s.get('display_ticker', s['ticker']) 
+        display_name = s.get('name', display_ticker)
+        # -----------------------------------------------
 
-        # --- LÓGICA HEATMAP ---
-        card_bg_class = 'bg-heatmap-positive' if day_pct >= 0 else 'bg-heatmap-negative'
+        card_bg_class = 'bg-heatmap-positive' if s['day_change_pct'] >= 0 else 'bg-heatmap-negative'
 
-        # --- ESTRUCTURA DE LA CARD (4 por fila) ---
         card = dbc.Col(
             dbc.Card([
                 dbc.CardBody([
                     html.Div([
-                        html.H3(s['ticker'], className="fw-bold mb-0 text-white"),
+                        # Usamos display_ticker (BTC) en vez de ticker (BINANCE:...)
+                        html.H3(display_ticker, className="fw-bold mb-0 text-white"),
                         html.Small(display_name, className="text-muted text-uppercase fw-bold", style={"fontSize": "0.75rem"}),
                         
-                        # 🚨 DISEÑO CORREGIDO DE UNIDADES Y COSTO PROMEDIO
                         dbc.Row([
-                            dbc.Col(
-                                html.P(f"Unidades: {s['shares']:,.2f}", className="text-white fw-bold mt-1 mb-0", style={"fontSize": "0.75rem"}),
-                                width="auto" 
-                            ),
-                            dbc.Col(
-                                html.P(f"@{s['avg_price']:,.2f}", className="text-muted fw-bold mt-1 mb-0", style={"fontSize": "0.75rem"}),
-                                width="auto",
-                                className="ms-auto" 
-                            )
+                            dbc.Col(html.P(f"Unidades: {s['shares']:,.2f}", className="text-white fw-bold mt-1 mb-0", style={"fontSize": "0.75rem"}), width="auto"),
+                            dbc.Col(html.P(f"@{s['avg_price']:,.2f}", className="text-muted fw-bold mt-1 mb-0", style={"fontSize": "0.75rem"}), width="auto", className="ms-auto")
                         ], className="g-0 justify-content-between mb-2")
-
                     ], className="mb-3"), 
 
                     html.Div([
                         html.H4(f"${s['market_value']:,.2f}", className="fw-bold mb-0 text-white"),
-                        html.Small(f"${s['current_price']:,.2f} / unidad", className="text-muted") 
+                        html.Small(f"${s['current_price']:,.2f}", className="text-muted") 
                     ], className="mb-3 text-center"), 
 
                     html.Hr(className="border-secondary my-2"),
-                    
                     html.Small("Rendimiento:", className="text-muted fw-bold mb-2 d-block"),
 
                     dbc.Row([
                         dbc.Col("Hoy:", width=4, className="text-muted small"),
                         dbc.Col([
                             html.Span(f"{day_sign}${day_gain_usd:,.2f}", className=f"fw-bold {day_color} me-2"),
-                            html.Small(f"({day_sign}{day_pct:.2f}%)", className=f"{day_color}")
+                            html.Small(f"({day_sign}{s['day_change_pct']:.2f}%)", className=f"{day_color}")
                         ], width=8, className="text-end")
                     ], className="mb-1"),
 
@@ -651,7 +679,6 @@ def render_asset_cards(json_assets, sort_value, active_tab):
                             html.Small(f"({total_sign}{s['total_gain_pct']:+.2f}%)", className=f"{total_color}")
                         ], width=8, className="text-end")
                     ]),
-                    
                 ]),
                 html.Div(id={'type': 'stock-card', 'index': s['id']}, className="stretched-link") 
             ], className=f"data-card h-100 zoom-on-hover shadow-sm {card_bg_class}", style={"cursor": "pointer"}),
@@ -660,9 +687,8 @@ def render_asset_cards(json_assets, sort_value, active_tab):
         cards.append(card)
         
     return cards
-
-
 # 4. Abrir Detalle (Click en Card) - MODIFICADO (Cuerpo y Footer)
+# 4. Abrir Detalle (Click en Card) - MODIFICADO
 @callback(
     [Output("detail-asset-modal", "is_open"),
      Output("detail-asset-title", "children"),
@@ -683,11 +709,10 @@ def handle_card_click(n_clicks, delete, open_sell, open_buy, open_edit, viewing_
     trig = ctx.triggered_id
     
     # --- LÓGICA DE CIERRE ---
+    # Si presionamos Editar, Eliminar, Vender o Comprar, cerramos este modal
+    # PERO usamos 'no_update' en los Stores para NO PERDER el ID seleccionado.
     if trig in ["btn-asset-delete", "btn-open-sell-modal", "btn-open-buy-modal", "btn-open-edit-modal"]:
-        if trig in ["btn-open-sell-modal", "btn-open-buy-modal", "btn-open-edit-modal"]:
-            return False, no_update, no_update, viewing_id, no_update
-            
-        return False, no_update, no_update, None, None 
+        return False, no_update, no_update, no_update, no_update
     
     # --- LÓGICA DE APERTURA ---
     if isinstance(trig, dict) and trig['type'] == 'stock-card':
@@ -715,7 +740,7 @@ def handle_card_click(n_clicks, delete, open_sell, open_buy, open_edit, viewing_
                 ], width=12, className="text-center mb-4")
             ]),
             
-            # 🚨 BOTONES DE ACCIÓN (VENDER / COMPRAR) - REUBICADOS 🚨
+            # BOTONES DE ACCIÓN (VENDER / COMPRAR)
             dbc.Row([
                 dbc.Col(
                     dbc.Button("Vender", id="btn-open-sell-modal", color="danger", outline=True, className="w-100"), 
@@ -749,7 +774,7 @@ def handle_card_click(n_clicks, delete, open_sell, open_buy, open_edit, viewing_
             ], className="mb-4 shadow-sm border-light"),
 
 
-            # 3. ESTADÍSTICAS CLAVE (Resto de métricas)
+            # 3. ESTADÍSTICAS CLAVE
             html.H6("Estadísticas Clave", className="mb-3 border-bottom pb-2 text-info"),
             create_range_bar(
                 min_val=data['day_low'], max_val=data['day_high'], current_price=data['current_price'], label="Rango Día"
@@ -757,15 +782,39 @@ def handle_card_click(n_clicks, delete, open_sell, open_buy, open_edit, viewing_
             create_range_bar(
                 min_val=data['fiftyTwo_low'], max_val=data['fiftyTwo_high'], current_price=data['current_price'], label="Rango 52 Semanas"
             ),
+            # 3. ESTADÍSTICAS CLAVE
+            # Fila 1: Market Cap y P/E Ratio
             dbc.Row([
-                dbc.Col([html.Small("Market Cap", className="text-muted d-block"),html.Span(f"${data['market_cap']:,.0f}M") if data['market_cap'] else "-"], width=6, className="mb-3"),
-                dbc.Col([html.Small("P/E Ratio", className="text-muted d-block"),html.Span(f"{data['pe_ratio']:.2f}") if data['pe_ratio'] else "-"], width=6),
+                # COLUMNA IZQUIERDA (Con línea divisoria 'border-end')
+                dbc.Col([
+                    # 1. Market Cap
+                    html.Div([
+                        html.Small("Market Cap", className="text-muted d-block"),
+                        html.Span(f"${data.get('market_cap'):,.0f}M" if data.get('market_cap') else "-", className="fw-bold")
+                    ], className="mb-3"),
+                    
+                    # 2. Div Yield
+                    html.Div([
+                        html.Small("Div Yield", className="text-muted d-block"),
+                        html.Span(f"{data['dividend_yield']:.2f}%" if data['dividend_yield'] else "-", className="fw-bold")
+                    ]),
+                ], width=6, className="border-end border-secondary"), # <--- AQUÍ ESTÁ LA LÍNEA
+                
+                # COLUMNA DERECHA (Con padding 'ps-3' para separarse de la línea)
+                dbc.Col([
+                    # 3. P/E Ratio
+                    html.Div([
+                        html.Small("P/E Ratio", className="text-muted d-block"),
+                        html.Span(f"{data['pe_ratio']:.2f}" if data['pe_ratio'] else "-", className="fw-bold")
+                    ], className="mb-3 ps-3"), # ps-3 = padding-start: 3 (espacio a la izquierda)
+                    
+                    # 4. Beta
+                    html.Div([
+                        html.Small("Beta (Volatilidad)", className="text-muted d-block"),
+                        html.Span(f"{data['beta']:.2f}" if data['beta'] else "-", className="fw-bold")
+                    ], className="ps-3"),
+                ], width=6),
             ]),
-            dbc.Row([
-                dbc.Col([html.Small("Div Yield", className="text-muted d-block"),html.Span(f"{data['dividend_yield']:.2f}%") if data['dividend_yield'] else "-"], width=6),
-                dbc.Col([html.Small("Beta (Volatilidad)", className="text-muted d-block"),html.Span(f"{data['beta']:.2f}") if data['beta'] else "-"], width=6),
-            ]),
-
             # 4. INFORMACIÓN DE ORIGEN
             html.H6("Información de Origen", className="mb-3 mt-3 border-bottom pb-2 text-info"),
             dbc.Row([
@@ -787,18 +836,24 @@ def handle_card_click(n_clicks, delete, open_sell, open_buy, open_edit, viewing_
         ], id="stock-modal-content-scroll", 
         style={"maxHeight": "65vh", "overflowY": "auto", "overflowX": "hidden", "paddingRight": "10px"})
         
-        # Título del Modal
+        display_ticker = data.get('display_ticker', data['ticker'])
+        
+        real_name = data.get('real_name', display_ticker) 
+
         title = html.Div([
-            html.Span(data['name'], className="me-2 h5"),
-            dbc.Badge(data['ticker'], color="light", className="text-dark align-top")
-        ])
+            # 1. Display Ticker (Grande, Negrita, Blanco)
+            html.H2(display_ticker, className="mb-0 fw-bold d-inline-block me-2 text-white"),
+            
+            # 2. Real Name (Pequeño, Gris)
+            html.Small(real_name, className="text-muted", style={"fontSize": "1rem", "fontWeight": "normal"})
+        ], className="d-flex align-items-baseline") # Alineados a la base
         
-        ticker = data['ticker']
+        # El ticker técnico para operaciones sigue siendo el raw
+        ticker_real = data['ticker'] 
         
-        return True, title, modal_content, asset_id, ticker
+        return True, title, modal_content, asset_id, ticker_real
 
     return no_update, no_update, no_update, no_update, no_update
-
 
 # 5. Ejecutar Eliminación y Trigger Refresh
 @callback(

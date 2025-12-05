@@ -14,40 +14,38 @@ from datetime import date
 layout = dbc.Container(
     [
         # Título Principal
-        dbc.Row([
-            dbc.Col(html.H2("Resumen Financiero Global", className="mb-4"), width=12)
-        ]),
-
-        # --- FILA 1: PATRIMONIO (KPIs) CON BOTÓN DE REFRESCO ---
-        # --- FILA 1: PATRIMONIO (KPIs) CON BOTÓN DE REFRESCO ---
-        dbc.Row([
-            dbc.Col(html.H5("Mi Patrimonio", className="text-primary mb-0"), width="auto", className="d-flex align-items-center"),
-            
-            dbc.Col([
-                # COMPONENTE DE CARGA (Loading)
-                # Envuelve el botón y el label para mostrar actividad
-                dcc.Loading(
-                    id="loading-refresh-data",
-                    type="circle", # Puedes usar: 'graph', 'cube', 'circle', 'dot'
-                    color="#2A9FD6", # Color de tu tema
-                    children=[
-                        html.Div([ # Contenedor flex interno
-                            dbc.Button(
-                                html.I(className="bi bi-arrow-clockwise"), 
-                                id="btn-refresh-investments", 
-                                color="link", 
-                                size="sm", 
-                                className="p-0 ms-2 text-decoration-none text-muted",
-                                title="Actualizar precios de mercado ahora (Lento)"
-                            ),
-                            # ETIQUETA DE FECHA DE ACTUALIZACIÓN
-                            html.Small(id="last-updated-label", className="text-muted ms-2 small fst-italic")
-                        ], className="d-flex align-items-center")
-                    ]
-                )
-            ], width="auto", className="d-flex align-items-center"),
-        ], className="mb-3 align-items-center"),
+       dbc.Row([
+        # COLUMNA IZQUIERDA: TÍTULO
+        dbc.Col(
+            html.H2("Resumen Financiero Global", className="mb-0 text-primary"), 
+            width="auto", 
+            className="d-flex align-items-center"
+        ),
         
+        # COLUMNA DERECHA: BOTÓN + LOADER (Alineado a la derecha con ms-auto)
+        dbc.Col([
+            dcc.Loading(
+                id="loading-refresh-dash",
+                type="circle",
+                color="#2A9FD6", # Azul Cyborg
+                children=[
+                    html.Div([
+                        dbc.Button(
+                            html.I(className="bi bi-arrow-clockwise"), 
+                            id="btn-refresh-dashboard", # ID ÚNICO PARA DASHBOARD
+                            color="link", 
+                            size="sm", 
+                            className="p-0 ms-2 text-decoration-none text-muted fs-4", # fs-4 para que el icono sea proporcional al H2
+                            title="Actualizar datos financieros ahora"
+                        ),
+                        # ETIQUETA DE FECHA
+                        html.Small(id="last-updated-dash-label", className="text-muted ms-2 small fst-italic")
+                    ], className="d-flex align-items-center")
+                ]
+            )
+        ], width="auto", className="d-flex align-items-center ms-auto"), # <--- ms-auto empuja a la derecha
+    ], className="mb-4 align-items-center"),
+
         dbc.Row([
             # 1. PATRIMONIO NETO (Total)
              dbc.Col(
@@ -194,6 +192,7 @@ layout = dbc.Container(
 # ------------------------------------------------------------------------------
 # CALLBACKS
 # ------------------------------------------------------------------------------
+
 @callback(
     [Output("nw-total", "children"),
      Output("nw-total", "className"),
@@ -211,11 +210,11 @@ layout = dbc.Container(
      Output("graph-cashflow", "figure"),
      Output("graph-categories", "figure"),
      Output("graph-networth-history", "figure"),
-     Output("last-updated-label", "children")],   # Output Fecha Actualización
+     Output("last-updated-dash-label", "children")],   # Output Fecha Actualización
     [Input("url", "pathname"),
      Input("nw-date-picker", "start_date"), 
      Input("nw-date-picker", "end_date"),
-     Input("btn-refresh-investments", "n_clicks")] # Input Botón Refresco
+     Input("btn-refresh-dashboard", "n_clicks")] # Input Botón Refresco
 )
 def update_dashboard(pathname, start_date, end_date, n_refresh):
     if pathname != "/":
@@ -224,7 +223,7 @@ def update_dashboard(pathname, start_date, end_date, n_refresh):
     # --- LÓGICA DE REFRESCO ---
     # Detectamos si el usuario presionó el botón de refresco
     ctx_id = ctx.triggered_id
-    force_refresh = (ctx_id == "btn-refresh-investments")
+    force_refresh = (ctx_id == "btn-refresh-dashboard")
 
     # --- LÓGICA DE FECHAS ---
     df_trans = dm.get_transactions_df()

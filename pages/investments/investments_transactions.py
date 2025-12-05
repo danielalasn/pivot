@@ -89,13 +89,15 @@ def toggle_buy_modal(open_n, cancel_n, ticker):
         pos = dm.get_investment_by_ticker(ticker)
         data = dm.get_simulator_ticker_data(ticker)
         
+        # CAMBIO AQUÍ: Usamos {ticker} en el título para ver el nombre REAL (Ej: BINANCE:BTCUSDT)
+        modal_title = f"Registrar Compra: {ticker}"
+        
         shares_info = f"Activo: {ticker}. Unidades actuales: {pos['shares'] if pos else 0:,.2f}."
         current_price = data['current_price'] if data and data['current_price'] else 0
         
-        return True, f"Registrar Compra", shares_info, "", current_price 
+        return True, modal_title, shares_info, "", current_price 
         
     return no_update, no_update, no_update, no_update, no_update
-
 
 # 2. Abrir Modal de Venta y poblar info (Incluye precarga de precio y limpieza de mensaje)
 @callback(
@@ -118,15 +120,16 @@ def toggle_sell_modal(open_n, cancel_n, ticker):
         data = dm.get_simulator_ticker_data(ticker)
 
         shares = pos['shares'] if pos else 0
-        shares_info = f"Activo: {ticker}. Unidades disponibles: {shares:,.2f}."
         
+        # CAMBIO AQUÍ: Título explícito con el Ticker Real
+        modal_title = f"Registrar Venta: {ticker}"
+        
+        shares_info = f"Activo: {ticker}. Unidades disponibles: {shares:,.2f}."
         current_price = data['current_price'] if data and data['current_price'] else 0
         
-        return True, f"Registrar Venta", shares_info, current_price, ""
+        return True, modal_title, shares_info, current_price, ""
         
     return no_update, no_update, no_update, no_update, no_update
-
-
 # 3. Registrar Compra (Actualiza DB y dispara Toast)
 @callback(
     [Output("buy-msg", "children"),

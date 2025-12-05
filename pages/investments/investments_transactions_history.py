@@ -92,18 +92,29 @@ def fetch_and_cache_transactions(pathname, signal_sales, signal_assets):
 
 
 # 1. Renderizar Historial Detallado de Transacciones (COMPRAS y VENTAS)
+# 1. Renderizar Historial Detallado de Transacciones (COMPRAS y VENTAS)
 @callback(
     Output("transaction-history-table-container", "children"),
-    Input("sales-history-cache", "data") # Contiene todo el historial de trades
+    Input("sales-history-cache", "data") 
 )
 def render_transaction_history_table(json_history):
     
-    if not json_history or json_history == '{}':
+    # --- VALIDACIÓN CORREGIDA ---
+    # Si está vacío O si empieza con "REFRESH" (la señal que enviamos al guardar), no intentamos parsear.
+    if not json_history or json_history == '{}' or str(json_history).startswith('REFRESH'):
         return html.Div("No hay transacciones de inversión registradas.", className="text-muted fst-italic text-center py-4")
 
-    df_history = pd.read_json(json_history, orient='split')
+    try:
+        # Intentamos convertir el JSON a DataFrame
+        df_history = pd.read_json(json_history, orient='split')
+    except ValueError:
+        # Si falla (por cualquier motivo de formato), mostramos cargando en vez de romper la app
+        return html.Div("Cargando datos...", className="text-muted text-center")
     
-    # Renombrar y seleccionar columnas para la visualización
+    # ---------------------------------------------------------
+    # Resto de la lógica de visualización (Sin cambios)
+    # ---------------------------------------------------------
+    
     df_history = df_history.rename(columns={
         'date': 'Fecha', 
         'ticker': 'Ticker', 
@@ -116,11 +127,8 @@ def render_transaction_history_table(json_history):
     })
     
     df_history['Tipo'] = df_history['Tipo'].apply(lambda x: 'Venta' if x == 'SELL' else 'Compra')
-    
-    # Añadir columna de acción (botón de eliminar)
     df_history['Acción'] = "✖" 
 
-    # --- GENERAR DASH TABLE ---
     columns = [
         {"name": "Fecha", "id": "Fecha"},
         {"name": "Tipo", "id": "Tipo"},
@@ -133,7 +141,6 @@ def render_transaction_history_table(json_history):
         {"name": "Anular", "id": "Acción", "deletable": False, "selectable": False} 
     ]
     
-    # Estilos de color condicional
     style_data_conditional = [
         {'if': {'column_id': 'P/L', 'filter_query': '{P/L} > 0'}, 'color': '#00C851', 'fontWeight': 'bold'},
         {'if': {'column_id': 'P/L', 'filter_query': '{P/L} < 0'}, 'color': '#ff4444', 'fontWeight': 'bold'},
@@ -154,7 +161,6 @@ def render_transaction_history_table(json_history):
         sort_action="native",
         filter_action="native"
     )
-
 
 # 2. Toggle Modal de Confirmación para Anulación
 @callback(

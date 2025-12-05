@@ -989,61 +989,63 @@ def create_market_cache_table():
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Creamos la tabla si no existe
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS market_cache (
-        ticker TEXT PRIMARY KEY,
-        price REAL,
-        day_change REAL,
-        day_change_pct REAL,
-        day_high REAL,
-        day_low REAL,
-        fiftyTwo_high REAL,
-        fiftyTwo_low REAL,
-        market_cap REAL,
-        pe_ratio REAL,
-        dividend_yield REAL,
-        beta REAL,
-        sector TEXT,
-        country TEXT,
-        summary TEXT,
-        news TEXT,
-        sentiment TEXT,
-        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-    
-    # VERIFICACIÓN DE COLUMNAS (Para evitar el error anterior de "no such column")
-    # Si la tabla existe pero le faltan columnas nuevas, la borramos y recreamos
     cursor.execute("PRAGMA table_info(market_cache)")
     columns = [info[1] for info in cursor.fetchall()]
     
-    # Lista de columnas críticas que agregamos recientemente
-    required_cols = ['day_change', 'news', 'sentiment', 'sector']
-    if any(col not in columns for col in required_cols):
-        print("⚠️ Tabla market_cache obsoleta detectada. Recreando...")
+    # AGREGAR 'company_name' a la validación para recrear la tabla si falta
+    if columns and 'company_name' not in columns:
+        print("⚠️ Actualizando estructura de tabla market_cache (Adding company_name)...")
         cursor.execute("DROP TABLE market_cache")
-        # Volvemos a ejecutar el CREATE
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS market_cache (
-            ticker TEXT PRIMARY KEY,
-            price REAL, day_change REAL, day_change_pct REAL,
-            day_high REAL, day_low REAL, fiftyTwo_high REAL, fiftyTwo_low REAL,
-            market_cap REAL, pe_ratio REAL, dividend_yield REAL, beta REAL,
-            sector TEXT, country TEXT, summary TEXT,
-            news TEXT, sentiment TEXT,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-        
+        columns = [] 
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS market_cache (
+        ticker TEXT PRIMARY KEY,
+        company_name TEXT,  -- <--- NUEVA COLUMNA
+        price REAL, day_change REAL, day_change_pct REAL,
+        day_high REAL, day_low REAL, fiftyTwo_high REAL, fiftyTwo_low REAL,
+        market_cap REAL, 
+        shares_outstanding REAL, 
+        pe_ratio REAL, 
+        peg_ratio REAL, 
+        dividend_yield REAL, 
+        beta REAL,
+        sector TEXT, country TEXT, summary TEXT,
+        news TEXT, sentiment TEXT,
+        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
     conn.commit()
     conn.close()
-
-
-# backend/data_manager.py
-
 # backend/data_manage
 # backend/data_manager.py
+# backend/data_manager.py
+
+# ... (debajo de KNOWN_ETFS y detect_asset_type) ...
+
+def clean_ticker_display(raw_ticker):
+    """
+    Convierte 'BINANCE:BTCUSDT' en 'BTC' y 'COINBASE:ETH-USD' en 'ETH'.
+    También limpia tickers de acciones si es necesario.
+    """
+    if not raw_ticker: return ""
+    
+    clean = str(raw_ticker).upper()
+    
+    # 1. Quitar Prefijo del Exchange (BINANCE:, COINBASE:, etc)
+    if ":" in clean:
+        clean = clean.split(":")[1]
+        
+    # 2. Limpiar Sufijos de Cripto/Forex para dejar solo el símbolo base
+    # Orden importa: USDT primero para que no quede la T
+    suffixes = ["USDT", "-USD", "USD", "BUSD", "USDC"]
+    
+    for s in suffixes:
+        if clean.endswith(s) and len(clean) > len(s): # Asegurar que no borremos el ticker si es solo "USD"
+            clean = clean.replace(s, "")
+            break
+            
+    return clean
 
 def get_stocks_data(force_refresh=False):
     create_market_cache_table()
@@ -1059,71 +1061,126 @@ def get_stocks_data(force_refresh=False):
 
     my_tickers = df_investments['ticker'].unique().tolist()
     
-    # 1. ACTUALIZAR CACHÉ (Simplificado para brevedad)
+    # 2. DETERMINAR SI ACTUALIZAR (Usamos 'beta' como testigo de que tenemos data financiera)
     tickers_to_fetch = my_tickers if force_refresh else []
     if not force_refresh:
-        # Lógica para ver qué falta en caché (igual que tenías)
         placeholders = ','.join(['?']*len(my_tickers))
         try:
-            cached = pd.read_sql_query(f"SELECT ticker FROM market_cache WHERE ticker IN ({placeholders})", conn, params=my_tickers)
-            cached_list = cached['ticker'].tolist()
-            tickers_to_fetch = [t for t in my_tickers if t not in cached_list]
-        except: tickers_to_fetch = my_tickers
+            # Verificamos si tenemos datos críticos (ej: beta o pe_ratio)
+            query_check = f"SELECT ticker, beta FROM market_cache WHERE ticker IN ({placeholders})"
+            cached = pd.read_sql_query(query_check, conn, params=my_tickers)
+            # Si beta es nulo o 0, asumimos que falta info financiera y recargamos
+            valid_cached = cached[cached['beta'].notnull()]['ticker'].tolist()
+            tickers_to_fetch = [t for t in my_tickers if t not in valid_cached]
+        except: 
+            tickers_to_fetch = my_tickers
 
+    # 3. CONSULTAR API
     if tickers_to_fetch and finnhub_client:
-        print(f"🔄 Finnhub: {tickers_to_fetch}")
+        print(f"🔄 Finnhub Updating (Lite): {tickers_to_fetch}")
+        cursor = conn.cursor()
+        
         for t in tickers_to_fetch:
             try:
                 q = finnhub_client.quote(t)
-                if q['c'] == 0: continue
+                if q['c'] == 0: continue 
+                
                 try: p = finnhub_client.company_profile2(symbol=t)
                 except: p = {}
-                
-                # Guardamos en caché
-                cursor = conn.cursor()
-                cursor.execute("INSERT OR REPLACE INTO market_cache (ticker, price, day_change, day_change_pct, day_high, day_low, market_cap, sector, country, summary, last_updated) VALUES (?,?,?,?,?,?,?,?,?,?, datetime('now'))", 
-                (t, q['c'], q['d'], q['dp'], q['h'], q['l'], p.get('marketCapitalization',0), p.get('finnhubIndustry','N/A'), p.get('country','N/A'), p.get('currency','USD')))
-                conn.commit()
-                time.sleep(0.3)
-            except: pass
 
-    # 2. LEER Y CORREGIR TIPOS
+                # Extraer nombre real (Ej: 'Alphabet Inc' o 'Bitcoin')
+                real_name = p.get('name', t)
+                
+                try: 
+                    # Seguimos necesitando 'metrics' para Beta, Div Yield y 52Weeks
+                    metrics_res = finnhub_client.company_basic_financials(t, 'all')
+                    m = metrics_res.get('metric', {})
+                except: m = {}
+
+                try: 
+                    _today = datetime.now().strftime('%Y-%m-%d')
+                    news = finnhub_client.company_news(t, _from=_today, to=_today)[:3]
+                except: news = []
+
+                # INSERT SOLO CON LO NECESARIO
+                cursor.execute("""
+                INSERT OR REPLACE INTO market_cache (
+                    ticker, company_name, price, day_change, day_change_pct, day_high, day_low, 
+                    fiftyTwo_high, fiftyTwo_low, 
+                    market_cap, pe_ratio, dividend_yield, beta,
+                    sector, country, summary, news, sentiment, last_updated
+                ) 
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now','localtime'))
+                """, (
+                    t, real_name, # <--- Insertamos el nombre real
+                    q.get('c', 0), q.get('d', 0), q.get('dp', 0), q.get('h', 0), q.get('l', 0),
+                    m.get('52WeekHigh', 0), m.get('52WeekLow', 0), 
+                    p.get('marketCapitalization', 0), 
+                    m.get('pfcfShareTTM', 0) if m.get('peBasicExclExtraTTM') is None else m.get('peBasicExclExtraTTM', 0),
+                    m.get('dividendYieldIndicatedAnnual', 0), m.get('beta', 0),
+                    p.get('finnhubIndustry', 'N/A'), p.get('country', 'N/A'), p.get('currency', 'USD'), 
+                    json.dumps(news), json.dumps({})
+                ))
+                conn.commit()
+                time.sleep(0.3) 
+            except Exception as e: print(f"❌ Error {t}: {e}")
+
+    # 4. LEER DATOS (Query optimizada sin PEG ni Shares)
     query = """
-    SELECT i.*, c.price as current_price, c.day_change, c.day_change_pct, c.sector, c.market_cap 
-    FROM investments i LEFT JOIN market_cache c ON i.ticker = c.ticker
+    SELECT i.*, 
+           c.company_name, -- <--- Seleccionamos el nombre real
+           c.price as current_price, c.day_change, c.day_change_pct, c.sector, 
+           c.market_cap, c.day_high, c.day_low, c.news,
+           c.fiftyTwo_high, c.fiftyTwo_low, 
+           c.pe_ratio, c.dividend_yield, c.beta, c.country
+    FROM investments i 
+    LEFT JOIN market_cache c ON i.ticker = c.ticker
     """
     df = pd.read_sql_query(query, conn)
     conn.close()
     
     results = []
     for _, row in df.iterrows():
-        curr = row['current_price'] if pd.notnull(row['current_price']) else row['avg_price']
+        curr = row['current_price'] if pd.notnull(row['current_price']) and row['current_price'] > 0 else row['avg_price']
         mkt_val = row['shares'] * curr
         gain = mkt_val - (row['shares'] * row['avg_price'])
-        
-        # --- CORRECCIÓN DE TIPO ---
-        final_type = detect_asset_type(row['ticker'], row['sector'])
-        # --------------------------
+        ticker_clean = clean_ticker_display(row['ticker'])
+        real_name_db = row['company_name'] if pd.notnull(row['company_name']) else ticker_clean
+       
+        try: news_data = json.loads(row['news']) if row['news'] else []
+        except: news_data = []
 
         results.append({
             'id': row['id'],
-            'ticker': row['ticker'],
-            'asset_type': final_type,  # Usamos el tipo detectado
+            'ticker': row['ticker'],            # BINANCE:BTCUSDT
+            'display_ticker': ticker_clean,     # BTC
+            'real_name': real_name_db,          # Bitcoin / Alphabet Inc
+            'name': real_name_db,
+            'asset_type': row['asset_type'],
             'shares': row['shares'],
             'avg_price': row['avg_price'],
             'current_price': curr,
             'market_value': mkt_val,
             'total_gain': gain,
             'total_gain_pct': (gain / (row['shares']*row['avg_price']) * 100) if row['avg_price'] > 0 else 0,
-            'day_change_pct': row['day_change_pct'] or 0,
-            'sector': row['sector'] or 'N/A',
-            # Relleno de datos extra para que no falle el frontend
-            'name': row['ticker'], 'day_change': row['day_change'] or 0, 
-            'day_high':0, 'day_low':0, 'fiftyTwo_high':0, 'fiftyTwo_low':0, 
-            'pe_ratio':0, 'dividend_yield':0, 'beta':0, 'country':'N/A', 'summary':'', 'news': [], 'sentiment': {}
+            
+            # Datos de Mercado
+            'day_change': row['day_change'] or 0, 'day_change_pct': row['day_change_pct'] or 0,
+            'day_high': row['day_high'] or 0, 'day_low': row['day_low'] or 0,
+            'fiftyTwo_high': row['fiftyTwo_high'] or 0, 'fiftyTwo_low': row['fiftyTwo_low'] or 0,
+            
+            # Métricas Financieras (Solo las 4 necesarias)
+            'pe_ratio': row['pe_ratio'] or 0, 
+            'market_cap': row['market_cap'] or 0,
+            'dividend_yield': row['dividend_yield'] or 0, 
+            'beta': row['beta'] or 0, 
+            
+            'sector': row['sector'] or 'N/A', 'country': row['country'] or 'N/A', 
+            'summary': '', 'news': news_data, 'sentiment': {}
         })
         
     return results
+
 def get_data_timestamp():
     """Devuelve la fecha más reciente de actualización."""
     conn = get_connection()
@@ -1562,11 +1619,11 @@ def add_stock(ticker, shares, total_investment, asset_type="Stock", account_id=N
     conn = get_connection()
     cursor = conn.cursor()
     
-    # --- CAMBIO: AUTO-DETECTAR TIPO ---
+    # --- AUTO-DETECTAR TIPO AL GUARDAR ---
     detected = detect_asset_type(ticker)
     if detected != "Stock":
         asset_type = detected
-    # ----------------------------------
+    # -------------------------------------
         
     avg_price = total_investment / shares if shares > 0 else 0.0
     
@@ -1580,132 +1637,26 @@ def add_stock(ticker, shares, total_investment, asset_type="Stock", account_id=N
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (ticker.upper(), shares, avg_price, total_investment, asset_type, account_id, new_order))
         conn.commit()
-        return True, f"Agregado: {ticker} ({asset_type})"
+        return True, f"Agregado: {clean_ticker_display(ticker)} ({asset_type})"
     except Exception as e:
         return False, str(e)
     finally:
         conn.close()
-# backend/data_manager.py
-
 # backend/data_manager.py - Reemplazar la función get_investment_detail
 
-def get_investment_detail(inv_id):
-    """Detalle completo para el Modal usando Finnhub (Quote + Perfil + Métricas + Noticias)."""
-    conn = get_connection()
-    try:
-        row = pd.read_sql_query("SELECT * FROM investments WHERE id = ?", conn, params=(inv_id,))
-        if row.empty: return None
-        
-        data = row.iloc[0]
-        ticker = data['ticker']
-        shares = data['shares']
-        avg_price = data['avg_price']
-        
-        clean_ticker = ticker.strip().upper()
-        
-        # 1. Obtener Cotización (Precio en tiempo real)
-        try:
-            quote = finnhub_client.quote(clean_ticker)
-            current_price = float(quote.get('c', 0))
-            prev_close = float(quote.get('pc', 0))
-            day_high = float(quote.get('h', 0))
-            day_low = float(quote.get('l', 0))
+def get_investment_detail(asset_id):
+    # Reutilizamos get_stocks_data porque ya hace todo el trabajo sucio
+    all_data = get_stocks_data(force_refresh=False)
+    for asset in all_data:
+        if asset['id'] == asset_id:
+            # 🚨 ELIMINAR O COMENTAR ESTAS LÍNEAS QUE CAUSABAN EL ERROR 🚨
+            # asset['name'] = clean_ticker_display(asset['ticker']) 
+            # asset['ticker'] = clean_ticker_display(asset['ticker']) 
             
-            if current_price == 0: current_price = avg_price
-            if prev_close == 0: prev_close = avg_price
-        except:
-            current_price = avg_price
-            prev_close = avg_price
-            day_high = 0
-            day_low = 0
-        
-        # 2. Obtener Perfil (Nombre, Logo, Sector)
-        profile = {}
-        try:
-            profile = finnhub_client.company_profile2(symbol=clean_ticker)
-        except: pass
-        if not profile: profile = {}
-
-        # 3. OBTENER MÉTRICAS FINANCIERAS (Rango 52 sem, P/E, Div)
-        metrics = {}
-        try:
-            basic_fins = finnhub_client.company_basic_financials(clean_ticker, 'all')
-            if 'metric' in basic_fins:
-                metrics = basic_fins['metric']
-        except: pass
-        
-        # 4. OBTENER NOTICIAS (NUEVO)
-        news_list = []
-        if finnhub_client:
-            try:
-                # Noticias (últimos 7 días, limitamos a 5 items para no saturar el modal)
-                today = date.today().strftime('%Y-%m-%d')
-                last_week = (date.today() - timedelta(days=7)).strftime('%Y-%m-%d')
-                
-                raw_news = finnhub_client.company_news(clean_ticker, _from=last_week, to=today)
-                
-                # Limitar y simplificar la lista de noticias
-                news_list = [{
-                    'headline': n.get('headline', 'N/A'),
-                    'source': n.get('source', 'N/A'),
-                    'url': n.get('url', '#')
-                } for n in raw_news[:5]] # Tomamos solo las 5 más recientes
-                
-            except Exception as e:
-                print(f"Error fetching news for {clean_ticker}: {e}")
-
-
-        # Cálculos de Posición
-        market_value = current_price * shares
-        total_gain = market_value - (avg_price * shares)
-        total_gain_pct = (total_gain / (avg_price * shares) * 100) if avg_price > 0 else 0
-        
-        day_change = current_price - prev_close
-        day_change_pct = (day_change / prev_close * 100) if prev_close > 0 else 0
-
-        # Mapeo final
-        return {
-            # Info Básica
-            'name': profile.get('name', ticker),
-            'ticker': profile.get('ticker', ticker),
-            'sector': profile.get('finnhubIndustry', 'N/A'),
-            'country': profile.get('country', 'N/A'),
-            'logo_url': profile.get('logo', ''),
-            'summary': f"Moneda: {profile.get('currency', 'USD')} | IPO: {profile.get('ipo', 'N/A')}",
-            
-            # Datos de Mercado (Métricas)
-            'current_price': current_price,
-            'day_high': day_high,
-            'day_low': day_low,
-            'fiftyTwo_high': metrics.get('52WeekHigh', 0),
-            'fiftyTwo_low': metrics.get('52WeekLow', 0),
-            'market_cap': metrics.get('marketCapitalization', 0),
-            'pe_ratio': metrics.get('peTTM', 0),
-            'dividend_yield': metrics.get('dividendYieldIndicatedAnnual', 0),
-            'beta': metrics.get('beta', 0),
-
-            # NUEVOS DATOS
-            'news': news_list,
-
-            
-            # Tu Posición
-            'shares': shares,
-            'avg_price': avg_price,
-            'market_value': market_value,
-            'total_gain': total_gain,
-            'total_gain_pct': total_gain_pct,
-            'day_change': day_change,
-            'day_change_pct': day_change_pct
-        }
-    except Exception as e:
-        print(f"Error detail: {e}")
-        return None
-    finally:
-        conn.close()
-
-
-# backend/data_manager.py (Función update_investment - CORREGIDA)
-
+            # get_stocks_data YA devuelve 'display_ticker' (limpio) y 'ticker' (real).
+            # Devolvemos el objeto intacto para tener ambos datos.
+            return asset
+    return None
 def update_investment(inv_id, new_shares, new_total_investment):
     """Actualiza las shares y el total_investment, recalculando el avg_price."""
     conn = get_connection()
@@ -1964,31 +1915,52 @@ def undo_investment_transaction(trade_id):
 
 def get_adjustment_id_by_ticker(ticker):
     """
-    Obtiene el ID de un ajuste manual (asumiendo que solo hay uno por ticker para ajustes manuales).
-    Devuelve None si no se encuentra.
+    Obtiene el ID de un ajuste manual comparando el ticker visual (limpio) 
+    con los tickers guardados en DB (que pueden ser raw como BINANCE:BTCUSDT).
     """
     conn = get_connection()
     try:
-        # Buscamos el ID del ajuste manual para este ticker
-        df = pd.read_sql_query("SELECT id, realized_pl FROM pl_adjustments WHERE ticker = ?", conn, params=(ticker,))
-        if not df.empty:
-            return df.iloc[0]['id'], df.iloc[0]['realized_pl']
+        # 1. Traemos todos los ajustes (id, monto y nombre original)
+        df = pd.read_sql_query("SELECT id, realized_pl, ticker FROM pl_adjustments", conn)
+        
+        if df.empty: 
+            return None, None
+
+        # 2. Aplicamos la limpieza a los nombres de la DB para poder comparar
+        # clean_ticker_display convierte 'BINANCE:BTCUSDT' en 'BTC'
+        df['ticker_clean'] = df['ticker'].apply(clean_ticker_display)
+        
+        # 3. Buscamos coincidencia exacta con el ticker visual que recibimos (ej: 'BTC')
+        # El argumento 'ticker' viene del clic en la tabla UI, así que ya está limpio.
+        match = df[df['ticker_clean'] == ticker]
+        
+        if not match.empty:
+            # Retornamos el ID y el monto encontrados
+            return match.iloc[0]['id'], match.iloc[0]['realized_pl']
+        
+        return None, None
+        
+    except Exception as e:
+        print(f"Error en get_adjustment_id_by_ticker: {e}")
         return None, None
     finally:
         conn.close()
+# backend/data_manager.py
 
-
-def update_pl_adjustment(adjustment_id, new_pl_amount):
-    """Actualiza el valor de un ajuste P/L existente."""
+def update_pl_adjustment(adjustment_id, new_pl_amount, new_ticker):
+    """Actualiza el valor Y el ticker de un ajuste P/L existente."""
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        # Actualizamos Ticker y Monto
         cursor.execute("""
-            UPDATE pl_adjustments SET realized_pl = ? WHERE id = ?
-        """, (new_pl_amount, adjustment_id))
+            UPDATE pl_adjustments 
+            SET realized_pl = ?, ticker = ? 
+            WHERE id = ?
+        """, (new_pl_amount, new_ticker.upper(), adjustment_id))
         
         conn.commit()
-        return True, "Ajuste de P/L corregido exitosamente."
+        return True, "Ajuste corregido exitosamente."
     except Exception as e:
         conn.rollback()
         return False, f"Error DB al actualizar ajuste: {str(e)}"
