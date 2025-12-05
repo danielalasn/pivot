@@ -65,6 +65,28 @@ def ensure_db_structure():
     # 8. CATEGORÍAS PRINCIPALES (NUEVO)
     cursor.execute("CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);")
 
+    cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS market_cache (
+    ticker TEXT PRIMARY KEY,
+    price REAL,
+    day_change REAL,
+    day_change_pct REAL,
+    day_high REAL,
+    day_low REAL,
+    fiftyTwo_high REAL,
+    fiftyTwo_low REAL,
+    market_cap REAL,
+    pe_ratio REAL,
+    dividend_yield REAL,
+    beta REAL,
+    sector TEXT,
+    country TEXT,
+    summary TEXT,
+    news TEXT,       -- Guardaremos JSON aquí
+    sentiment TEXT,  -- Guardaremos JSON aquí
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+                   """)
     # --- DATOS POR DEFECTO ---
     # Insertar categorías default si la tabla está vacía
     cursor.execute("SELECT count(*) FROM categories")

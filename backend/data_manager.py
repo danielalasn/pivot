@@ -5,6 +5,7 @@ from datetime import date, timedelta
 import calendar
 import finnhub # NUEVA LIBRERÍA
 import time
+import json
 
 from dotenv import load_dotenv # IMPORTAR ESTO
 
@@ -45,6 +46,32 @@ else:
 def get_connection():
     return sqlite3.connect(DB_PATH)
 
+# --- LISTAS DE DETECCIÓN MANUAL (Para forzar tipos correctos) ---
+KNOWN_ETFS = [
+    'SPY', 'QQQ', 'QTUM', 'VOO', 'IVV', 'DIA', 'IWM', 'GLD', 'SLV', 
+    'SOXX', 'SMH', 'ARKK', 'TQQQ', 'SQQQ', 'VTI', 'VEA', 'VWO', 'SCHD', 
+    'JEPI', 'XLF', 'XLK', 'XLE', 'XLY', 'XLV', 'XLI', 'XLP', 'XLU', 'XLB'
+]
+
+def detect_asset_type(ticker, sector=None):
+    """Determina si es Stock, ETF o Cripto."""
+    clean = ticker.strip().upper()
+    
+    # 1. Cripto (Nombres comunes o pares con USD)
+    if "BTC" in clean or "ETH" in clean or "SOL" in clean or "-USD" in clean:
+        return "CRYPTO_FOREX"
+    
+    # 2. ETFs (Lista manual)
+    if clean in KNOWN_ETFS:
+        return "ETF"
+        
+    # 3. Por Sector (Si Finnhub nos dice que es fondo)
+    if sector and isinstance(sector, str):
+        sec_low = sector.lower()
+        if "etf" in sec_low or "fund" in sec_low:
+            return "ETF"
+            
+    return "Stock"
 # --- GESTIÓN DE CUENTAS ---
 
 # Definición robusta con kwargs para evitar errores si faltan argumentos
@@ -163,28 +190,42 @@ def change_account_order(account_id, direction, category_group):
 
 # backend/data_manager.py
 
+# backend/data_manager.py
+
 def get_account_options():
     """
-    Retorna las opciones para dropdowns de cuentas, incluyendo el saldo disponible
-    entre paréntesis para todas las cuentas, y la Reserva de Abono al final.
+    Retorna opciones formateadas para dropdowns.
+    - Crédito: Muestra 'Disponible' (Límite - Deuda).
+    - Débito/Efectivo: Muestra 'Saldo Actual'.
+    - Usa un salto de línea (\n) para separar nombre y monto visualmente.
     """
     conn = get_connection()
     cursor = conn.cursor()
     
-    # 1. Obtener Cuentas Normales
+    # 1. Obtener Cuentas (AÑADIMOS credit_limit A LA CONSULTA)
     try:
-        cursor.execute("SELECT id, name, bank_name, type, current_balance FROM accounts ORDER BY display_order ASC")
+        cursor.execute("SELECT id, name, bank_name, type, current_balance, credit_limit FROM accounts ORDER BY display_order ASC")
         data = cursor.fetchall()
         
-        # 🚨 CAMBIO AQUÍ: Incluimos current_balance en el formato 🚨
         options = []
-        for i, name, bank, atype, balance in data:
-            # Para Crédito, el saldo actual es la deuda (se muestra negativo si es activo)
-            # Usamos el saldo para mostrar la disponibilidad (que es el current_balance)
-            display_balance = balance if atype != 'Credit' else (balance * -1) 
+        for i, name, bank, atype, balance, limit in data:
             
-            # Formato: Nombre - Banco (Tipo) ($XX.XX)
-            label = f"{name} - {bank} ({atype}) (${balance:,.2f})"
+            # Lógica para mostrar el monto correcto
+            if atype == 'Credit':
+                # CALCULAR DISPONIBLE: Límite - Deuda Actual
+                # Asumimos que 'balance' en DB es la deuda positiva.
+                val_to_show = float(limit) - float(balance)
+                amount_str = f"Disponible: ${val_to_show:,.2f}"
+                text_color_class = "" # El CSS se encargará, pero el texto ayuda
+            else:
+                # Para débito es el saldo directo
+                val_to_show = balance
+                amount_str = f"Saldo: ${val_to_show:,.2f}"
+
+            # Construir la etiqueta con SALTO DE LÍNEA (\n)
+            # Línea 1: Nombre - Banco
+            # Línea 2: Monto
+            label = f"{name} - {bank} ({atype})\n{amount_str}"
             
             options.append({'label': label, 'value': i})
             
@@ -198,9 +239,9 @@ def get_account_options():
     except:
         reserve_bal = 0.0
 
-    # 3. Agregar Opción de Reserva al FINAL (sin el prefijo "Disponible:")
+    # Opción de Reserva (También con salto de línea)
     reserve_option = {
-        'label': f"Reserva de Abono (${reserve_bal:,.2f})", 
+        'label': f"Reserva de Abono\nDisponible: ${reserve_bal:,.2f}", 
         'value': 'RESERVE'
     }
     
@@ -208,7 +249,6 @@ def get_account_options():
     
     conn.close()
     return options
-
 
 
 def get_account_type_summary():
@@ -944,144 +984,170 @@ from datetime import datetime, timedelta # Asegúrate de tener estos imports
 
 # ... (otras funciones) ...
 
-def get_stocks_data(force_refresh=False):
-    """
-    Recupera posiciones de inversión.
-    1. Busca precios en la tabla 'market_cache'.
-    2. Si el precio es antiguo (>20 min) o force_refresh=True, llama a la API.
-    3. Actualiza la tabla de caché y retorna los datos.
-    """
+# --- 1. GESTIÓN DE TABLA CACHÉ (Versión Blindada) ---
+def create_market_cache_table():
     conn = get_connection()
     cursor = conn.cursor()
     
-    try:
-        # Obtener todas las inversiones del usuario
-        df_inv = pd.read_sql_query("SELECT * FROM investments ORDER BY display_order ASC", conn)
-        if df_inv.empty: return []
-        
-        stocks_list = []
-        
-        for _, row in df_inv.iterrows():
-            ticker = row['ticker']
-            shares = row['shares']
-            avg_price = row['avg_price']
-            asset_type_db = row['asset_type']
-            
-            # --- LÓGICA DE CACHÉ INTELIGENTE ---
-            current_price = 0.0
-            prev_close = 0.0
-            name = ticker
-            sector = 'N/A'
-            
-            # 1. Verificar caché en DB
-            cursor.execute("SELECT price, prev_close, company_name, sector, last_updated FROM market_cache WHERE ticker = ?", (ticker,))
-            cache_row = cursor.fetchone()
-            
-            need_api_call = True
-            
-            if cache_row and not force_refresh:
-                cached_price, cached_pc, cached_name, cached_sector, last_upd_str = cache_row
-                
-                # Verificar antigüedad (Ej: 20 minutos)
-                last_upd = datetime.strptime(last_upd_str, "%Y-%m-%d %H:%M:%S")
-                if datetime.now() - last_upd < timedelta(minutes=20):
-                    # Usar datos de caché
-                    current_price = cached_price
-                    prev_close = cached_pc
-                    name = cached_name
-                    sector = cached_sector
-                    need_api_call = False
-            
-            # 2. Si necesitamos actualizar (o no había caché)
-            if need_api_call:
-                # Llamada a API (Tu función existente)
-                c_price, p_close, c_name, c_sector = _get_price_finnhub(ticker, avg_price)
-                
-                # Si la API devolvió éxito, actualizamos la DB
-                if c_price > 0:
-                    current_price = c_price
-                    prev_close = p_close
-                    name = c_name
-                    sector = c_sector
-                    
-                    # Guardar en DB (Upsert)
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    cursor.execute("""
-                        INSERT INTO market_cache (ticker, price, prev_close, company_name, sector, last_updated)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(ticker) DO UPDATE SET
-                            price=excluded.price,
-                            prev_close=excluded.prev_close,
-                            last_updated=excluded.last_updated
-                    """, (ticker, current_price, prev_close, name, sector, now_str))
-                    conn.commit()
-                else:
-                    # Si la API falló, usamos el caché viejo si existe, o el precio promedio
-                    if cache_row:
-                        current_price = cache_row[0]
-                    else:
-                        current_price = avg_price
-
-            # --- CÁLCULOS FINANCIEROS ---
-            market_value = current_price * shares
-            total_cost = avg_price * shares
-            total_gain = market_value - total_cost
-            total_gain_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
-            
-            day_change_pct = 0
-            if prev_close > 0:
-                day_change_pct = ((current_price - prev_close) / prev_close) * 100
-
-            # CLASIFICACIÓN DE TIPO
-            final_asset_type = asset_type_db 
-            if sector in ['Exchange Traded Fund', 'Fund']: final_asset_type = 'ETF'
-            elif ticker in ['SPY', 'QQQ', 'VOO', 'VT', 'BND', 'VTI', 'QTUM']: final_asset_type = 'ETF'
-            elif 'USD' in ticker.upper() or 'USDT' in ticker.upper() or '/' in ticker: final_asset_type = 'CRYPTO_FOREX'
-            elif asset_type_db == 'ETF': final_asset_type = 'ETF'
-
-            if final_asset_type == 'ETF': sector = 'Fondos (ETF)'
-            elif final_asset_type == 'CRYPTO_FOREX': sector = 'Cripto/Forex'
-            elif sector == 'N/A' or sector == '': sector = 'Sin Clasificar' 
-
-            stocks_list.append({
-                'id': row['id'],
-                'ticker': ticker,
-                'name': name,
-                'shares': shares,
-                'avg_price': avg_price,
-                'current_price': current_price,
-                'market_value': market_value,
-                'total_gain': total_gain,
-                'total_gain_pct': total_gain_pct,
-                'day_change_pct': day_change_pct,
-                'sector': sector,
-                'asset_type': final_asset_type
-            })
-            
-        return stocks_list
+    # Creamos la tabla si no existe
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS market_cache (
+        ticker TEXT PRIMARY KEY,
+        price REAL,
+        day_change REAL,
+        day_change_pct REAL,
+        day_high REAL,
+        day_low REAL,
+        fiftyTwo_high REAL,
+        fiftyTwo_low REAL,
+        market_cap REAL,
+        pe_ratio REAL,
+        dividend_yield REAL,
+        beta REAL,
+        sector TEXT,
+        country TEXT,
+        summary TEXT,
+        news TEXT,
+        sentiment TEXT,
+        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
     
-    except Exception as e:
-        print(f"Error obteniendo stocks: {e}")
-        return []
-    finally:
-        conn.close()
+    # VERIFICACIÓN DE COLUMNAS (Para evitar el error anterior de "no such column")
+    # Si la tabla existe pero le faltan columnas nuevas, la borramos y recreamos
+    cursor.execute("PRAGMA table_info(market_cache)")
+    columns = [info[1] for info in cursor.fetchall()]
+    
+    # Lista de columnas críticas que agregamos recientemente
+    required_cols = ['day_change', 'news', 'sentiment', 'sector']
+    if any(col not in columns for col in required_cols):
+        print("⚠️ Tabla market_cache obsoleta detectada. Recreando...")
+        cursor.execute("DROP TABLE market_cache")
+        # Volvemos a ejecutar el CREATE
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS market_cache (
+            ticker TEXT PRIMARY KEY,
+            price REAL, day_change REAL, day_change_pct REAL,
+            day_high REAL, day_low REAL, fiftyTwo_high REAL, fiftyTwo_low REAL,
+            market_cap REAL, pe_ratio REAL, dividend_yield REAL, beta REAL,
+            sector TEXT, country TEXT, summary TEXT,
+            news TEXT, sentiment TEXT,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        
+    conn.commit()
+    conn.close()
 
-def get_data_timestamp():
-    """Devuelve la fecha más reciente de actualización en la tabla market_cache."""
-    conn = get_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT MAX(last_updated) FROM market_cache")
-        res = cursor.fetchone()
-        return res[0] if res and res[0] else "Sin datos"
-    except:
-        return "Error"
-    finally:
-        conn.close()
 
 # backend/data_manager.py
 
-def get_net_worth_breakdown(force_refresh=False): # <--- CORRECCIÓN 1: AÑADIDO PARÁMETRO
+# backend/data_manage
+# backend/data_manager.py
+
+def get_stocks_data(force_refresh=False):
+    create_market_cache_table()
+    conn = get_connection()
+    
+    try:
+        df_investments = pd.read_sql_query("SELECT * FROM investments", conn)
+    except:
+        conn.close(); return []
+
+    if df_investments.empty:
+        conn.close(); return []
+
+    my_tickers = df_investments['ticker'].unique().tolist()
+    
+    # 1. ACTUALIZAR CACHÉ (Simplificado para brevedad)
+    tickers_to_fetch = my_tickers if force_refresh else []
+    if not force_refresh:
+        # Lógica para ver qué falta en caché (igual que tenías)
+        placeholders = ','.join(['?']*len(my_tickers))
+        try:
+            cached = pd.read_sql_query(f"SELECT ticker FROM market_cache WHERE ticker IN ({placeholders})", conn, params=my_tickers)
+            cached_list = cached['ticker'].tolist()
+            tickers_to_fetch = [t for t in my_tickers if t not in cached_list]
+        except: tickers_to_fetch = my_tickers
+
+    if tickers_to_fetch and finnhub_client:
+        print(f"🔄 Finnhub: {tickers_to_fetch}")
+        for t in tickers_to_fetch:
+            try:
+                q = finnhub_client.quote(t)
+                if q['c'] == 0: continue
+                try: p = finnhub_client.company_profile2(symbol=t)
+                except: p = {}
+                
+                # Guardamos en caché
+                cursor = conn.cursor()
+                cursor.execute("INSERT OR REPLACE INTO market_cache (ticker, price, day_change, day_change_pct, day_high, day_low, market_cap, sector, country, summary, last_updated) VALUES (?,?,?,?,?,?,?,?,?,?, datetime('now'))", 
+                (t, q['c'], q['d'], q['dp'], q['h'], q['l'], p.get('marketCapitalization',0), p.get('finnhubIndustry','N/A'), p.get('country','N/A'), p.get('currency','USD')))
+                conn.commit()
+                time.sleep(0.3)
+            except: pass
+
+    # 2. LEER Y CORREGIR TIPOS
+    query = """
+    SELECT i.*, c.price as current_price, c.day_change, c.day_change_pct, c.sector, c.market_cap 
+    FROM investments i LEFT JOIN market_cache c ON i.ticker = c.ticker
+    """
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+    
+    results = []
+    for _, row in df.iterrows():
+        curr = row['current_price'] if pd.notnull(row['current_price']) else row['avg_price']
+        mkt_val = row['shares'] * curr
+        gain = mkt_val - (row['shares'] * row['avg_price'])
+        
+        # --- CORRECCIÓN DE TIPO ---
+        final_type = detect_asset_type(row['ticker'], row['sector'])
+        # --------------------------
+
+        results.append({
+            'id': row['id'],
+            'ticker': row['ticker'],
+            'asset_type': final_type,  # Usamos el tipo detectado
+            'shares': row['shares'],
+            'avg_price': row['avg_price'],
+            'current_price': curr,
+            'market_value': mkt_val,
+            'total_gain': gain,
+            'total_gain_pct': (gain / (row['shares']*row['avg_price']) * 100) if row['avg_price'] > 0 else 0,
+            'day_change_pct': row['day_change_pct'] or 0,
+            'sector': row['sector'] or 'N/A',
+            # Relleno de datos extra para que no falle el frontend
+            'name': row['ticker'], 'day_change': row['day_change'] or 0, 
+            'day_high':0, 'day_low':0, 'fiftyTwo_high':0, 'fiftyTwo_low':0, 
+            'pe_ratio':0, 'dividend_yield':0, 'beta':0, 'country':'N/A', 'summary':'', 'news': [], 'sentiment': {}
+        })
+        
+    return results
+def get_data_timestamp():
+    """Devuelve la fecha más reciente de actualización."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        # Verificamos si la tabla existe primero para evitar errores
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='market_cache'")
+        if not cursor.fetchone(): return "Nunca"
+
+        cursor.execute("SELECT MAX(last_updated) FROM market_cache")
+        res = cursor.fetchone()
+        
+        if res and res[0]:
+            # Formateamos la fecha para que sea legible (YYYY-MM-DD HH:MM)
+            dt = datetime.strptime(res[0], '%Y-%m-%d %H:%M:%S')
+            return dt.strftime('%d/%m %H:%M')
+        return "Sin datos"
+    except Exception as e:
+        return "Error"
+    finally:
+        conn.close()
+# backend/data_manager.py
+
+def get_net_worth_breakdown(force_refresh=False):
     """
     Obtiene un desglose detallado del Patrimonio Neto:
     - Activos: Cuentas + Cobros (IOU) + Reserva Abono + INVERSIONES
@@ -1152,6 +1218,8 @@ def get_net_worth_breakdown(force_refresh=False): # <--- CORRECCIÓN 1: AÑADIDO
     finally:
         conn.close()
     return details
+
+
 
 # data_manager.py
 
@@ -1343,11 +1411,6 @@ def get_historical_networth_trend(start_date=None, end_date=None):
 # backend/data_manager.py
 # backend/data_manager.py
 
-# ... (Tus imports anteriores) ...
-import yfinance as yf
-
-# --- GESTIÓN DE INVERSIONES (STOCKS) ---
-
 # backend/data_manager.py (MODIFICADO)
 
 # --- GESTIÓN DE INVERSIONES (STOCKS) ---
@@ -1499,29 +1562,29 @@ def add_stock(ticker, shares, total_investment, asset_type="Stock", account_id=N
     conn = get_connection()
     cursor = conn.cursor()
     
-    # 1. CÁLCULO CRÍTICO: avg_price = Inversión Total / Unidades
+    # --- CAMBIO: AUTO-DETECTAR TIPO ---
+    detected = detect_asset_type(ticker)
+    if detected != "Stock":
+        asset_type = detected
+    # ----------------------------------
+        
     avg_price = total_investment / shares if shares > 0 else 0.0
     
     try:
         cursor.execute("SELECT MAX(display_order) FROM investments")
         res = cursor.fetchone()
-        max_order = res[0] if res[0] is not None else 0
-        new_order = max_order + 1
+        new_order = (res[0] if res[0] is not None else 0) + 1
 
-        # 2. INSERTAR AMBOS VALORES (total_investment debe ser la nueva columna en la DB)
-        # Nota: La lista de columnas INSERT debe coincidir con la lista de valores
         cursor.execute("""
             INSERT INTO investments (ticker, shares, avg_price, total_investment, asset_type, account_id, display_order)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (ticker, shares, avg_price, total_investment, asset_type, account_id, new_order))
-        
+        """, (ticker.upper(), shares, avg_price, total_investment, asset_type, account_id, new_order))
         conn.commit()
-        return True, f"Ticker {ticker} agregado. Costo Promedio: ${avg_price:,.2f}"
+        return True, f"Agregado: {ticker} ({asset_type})"
     except Exception as e:
-        return False, f"Error al crear: {str(e)}"
+        return False, str(e)
     finally:
         conn.close()
-
 # backend/data_manager.py
 
 # backend/data_manager.py - Reemplazar la función get_investment_detail
@@ -2163,6 +2226,9 @@ CREATE TABLE IF NOT EXISTS sales_history (
 
 # backend/data_manager.py (Nueva función para el Simulador)
 
+# En backend/data_manager.py
+
+
 def get_simulator_ticker_data(ticker):
     """
     Retrieves DB data (shares, avg_price) and current price (live API call) 
@@ -2382,5 +2448,64 @@ def process_card_payment(card_id, amount, source_id=None):
     except Exception as e:
         conn.rollback()
         return False, f"Error al procesar pago: {str(e)}"
+    finally:
+        conn.close()
+
+def add_transfer(date_val, name, amount, source_acc_id, dest_acc_id):
+    """
+    Registra una transferencia interna como dos movimientos:
+    1. Gasto (Expense) en la cuenta origen.
+    2. Ingreso (Income) en la cuenta destino.
+    Usa la categoría 'Transferencia' y ajusta saldos automáticamente.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # 1. Obtener nombres de las cuentas para que el registro se vea bonito
+        cursor.execute("SELECT name FROM accounts WHERE id = ?", (source_acc_id,))
+        res_src = cursor.fetchone()
+        src_name = res_src[0] if res_src else "Cuenta Origen"
+
+        cursor.execute("SELECT name FROM accounts WHERE id = ?", (dest_acc_id,))
+        res_dest = cursor.fetchone()
+        dest_name = res_dest[0] if res_dest else "Cuenta Destino"
+
+        # Detalle adicional si el usuario escribió algo
+        user_detail = f": {name}" if name and name != "-" else ""
+
+        # ---------------------------------------------------------
+        # PASO A: RETIRO DEL ORIGEN (Expense)
+        # ---------------------------------------------------------
+        trans_name_out = f"Transferencia a {dest_name}{user_detail}"
+        
+        cursor.execute("""
+            INSERT INTO transactions (date, name, amount, category, type, account_id, subcategory)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (date_val, trans_name_out, amount, "Transferencia", "Expense", source_acc_id, "Movimiento Interno"))
+
+        # Actualizar Saldo Origen (Resta)
+        _adjust_account_balance(cursor, source_acc_id, amount, "Expense", is_reversal=False)
+
+        # ---------------------------------------------------------
+        # PASO B: DEPÓSITO AL DESTINO (Income)
+        # ---------------------------------------------------------
+        trans_name_in = f"Transferencia desde {src_name}{user_detail}"
+        
+        cursor.execute("""
+            INSERT INTO transactions (date, name, amount, category, type, account_id, subcategory)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (date_val, trans_name_in, amount, "Transferencia", "Income", dest_acc_id, "Movimiento Interno"))
+
+        # Actualizar Saldo Destino (Suma)
+        _adjust_account_balance(cursor, dest_acc_id, amount, "Income", is_reversal=False)
+
+        conn.commit()
+        return True, "Transferencia realizada con éxito."
+        
+    except Exception as e:
+        conn.rollback() # Deshacer cambios si algo falla a la mitad
+        print(f"Error en add_transfer: {e}")
+        return False, f"Error en transferencia: {e}"
     finally:
         conn.close()

@@ -4,3 +4,6 @@ pandas
 numpy
 plotly
 requests
+finnhub-python
+dotenv
+yfinance

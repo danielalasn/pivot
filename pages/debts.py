@@ -13,53 +13,118 @@ import time
 # -----------------------------------------------------------------------------
 
 def render_summary_cards():
-    """Genera el layout de las tarjetas de resumen llamando al data_manager."""
-    summary = dm.get_full_debt_summary()
+    """
+    Genera el layout de tarjetas calculando la Deuda Neta Real:
+    Fórmula: (Exigible Neto Tarjetas) - (Saldo Neto Informal)
+    """
+    # 1. OBTENER DATOS DE IOU (INFORMAL)
+    # Recalculamos manualmente para asegurar que tenemos los datos frescos
+    iou_df = dm.get_iou_df()
+    receivables = iou_df[iou_df['type'] == 'Receivable']['current_amount'].sum() # Me deben
+    payables = iou_df[iou_df['type'] == 'Payable']['current_amount'].sum()       # Yo debo
+    informal_net_balance = receivables - payables  # Positivo = A favor, Negativo = En contra
+
+    # 2. OBTENER DATOS DE TARJETAS (CREDIT)
+    cc_summary = dm.get_credit_summary_data()
+    cc_debt = cc_summary.get('total_debt', 0.0)
+    cc_installments = cc_summary.get('total_installments', 0.0)
+    cc_reserve = dm.get_credit_abono_reserve()
+
+    # 3. CALCULAR EXIGIBLE NETO DE TARJETAS
+    # (Deuda Total - Cuotas) = Exigible Bruto. Si es menor a 0, ponemos 0.
+    cc_exigible_gross = max(0, cc_debt - cc_installments)
     
-    informal_debt = summary['informal_debt']
-    informal_collectible = summary['informal_collectible']
-    net_exposure = summary['net_exposure']
-    informal_net_balance = summary['informal_net_balance']
-    total_liabilities = summary['total_gross_debt'] 
+    # Exigible Neto = Exigible Bruto - Reserva de Abono
+    # Nota: Matemáticamente permitimos que sea negativo si tienes más reserva que deuda exigible,
+    # eso ayudaría a bajar tu deuda neta total.
+    cc_exigible_net = cc_exigible_gross - cc_reserve
+
+    # 4. FÓRMULA FINAL: DEUDA NETA REAL
+    # Deuda Neta = (Carga Financiera TC) - (Posición Informal)
+    # Si 'informal_net_balance' es positivo (te deben), RESTA a tu deuda.
+    # Si 'informal_net_balance' es negativo (tú debes), -(-x) SUMA a tu deuda.
+    net_exposure = cc_exigible_net - informal_net_balance
+
+    # --- LÓGICA VISUAL (COLORES E ICONOS) ---
     
-    if informal_net_balance > 0:
-        net_color = "text-success" 
-        net_icon = "bi bi-arrow-up-circle-fill me-2"
-    elif informal_net_balance < 0:
-        net_color = "text-danger" 
-        net_icon = "bi bi-arrow-down-circle-fill me-2"
+    # Para el bloque de "Exposición Neta"
+    if net_exposure > 0:
+        # Tienes una deuda real positiva (Carga financiera)
+        exposure_color = "text-danger"
+        exposure_title = "Deuda Neta Real (A Pagar)"
+    elif net_exposure < 0:
+        # Tienes saldo a favor global (Tus activos superan tus pasivos inmediatos)
+        exposure_color = "text-success"
+        exposure_title = "Excedente de Liquidez Real"
+        net_exposure = abs(net_exposure) # Lo mostramos positivo visualmente pero verde
     else:
-        net_color = "text-primary" 
+        exposure_color = "text-primary"
+        exposure_title = "Punto de Equilibrio"
+
+    # Para el bloque de "Saldo Informal"
+    if informal_net_balance > 0:
+        net_icon = "bi bi-arrow-up-circle-fill me-2"
+        informal_color = "text-success"
+    elif informal_net_balance < 0:
+        net_icon = "bi bi-arrow-down-circle-fill me-2"
+        informal_color = "text-danger"
+    else:
         net_icon = "bi bi-check-circle-fill me-2"
+        informal_color = "text-muted"
 
     return [
+        # TARJETA 1: EXPOSICIÓN NETA (Tu nueva fórmula)
         dbc.Col(dbc.Card(dbc.CardBody([
-            html.H5("Exposición Neta a Deuda", className="card-title text-warning"),
-            html.H2(f"${net_exposure:,.2f}", className=f"card-value {'text-danger' if net_exposure > 0 else 'text-success'} mb-2"),
-            html.Small([
-                html.Span(f"Debo Total: ${total_liabilities:,.2f}", className="text-danger"), 
-                " | ", 
-                html.Span(f"Me deben: ${informal_collectible:,.2f}", className="text-success")
-            ], className="d-block text-muted small")
-        ]), className="metric-card h-100 shadow-sm"), lg=6, md=12, className="mb-4"),
+            html.H5(exposure_title, className="card-title text-muted small text-uppercase fw-bold"),
+            html.H2(f"${net_exposure:,.2f}", className=f"card-value {exposure_color} mb-3 fw-bold"),
+            
+            # Desglose pequeño para que entiendas de dónde sale el número
+            html.Div([
+                dbc.Row([
+                    dbc.Col("Exigible TC (Neto):", className="text-muted small"),
+                    dbc.Col(f"${cc_exigible_net:,.2f}", className="text-end small fw-bold")
+                ]),
+                dbc.Row([
+                    dbc.Col("Posición Informal:", className="text-muted small"),
+                    dbc.Col(f"{'-' if informal_net_balance > 0 else '+'}${abs(informal_net_balance):,.2f}", 
+                            className=f"text-end small fw-bold {informal_color}")
+                ]),
+            ], className="border-top pt-2 mt-2")
+        ]), className="metric-card h-100 shadow-sm border-0"), lg=6, md=12, className="mb-4"),
         
+        # TARJETA 2: DETALLE INFORMAL (IOU)
         dbc.Col(dbc.Card(dbc.CardBody([
-            html.H5("Saldo Neto de Cuentas Informales", className="card-title"),
-            html.H2([html.I(className=net_icon), f"${informal_net_balance:,.2f}"], className=f"card-value {net_color} mb-2"),
-            html.Small([
-                html.Span(f"Cobros: ${informal_collectible:,.2f}", className="text-success"), 
-                " | ", 
-                html.Span(f"Deudas: -${informal_debt:,.2f}", className="text-danger")
-            ], className="d-block text-muted small")
-        ]), className="metric-card h-100 shadow-sm"), lg=6, md=12, className="mb-4"),
+            html.H5("Posición Informal (IOU)", className="card-title text-muted small text-uppercase fw-bold"),
+            html.H2([html.I(className=net_icon), f"${abs(informal_net_balance):,.2f}"], className=f"card-value {informal_color} mb-3"),
+            
+            html.Div([
+                html.Span([html.I(className="bi bi-box-arrow-in-down me-1"), f"Me deben: ${receivables:,.2f}"], className="badge bg-success bg-opacity-10 text-success me-2 p-2"),
+                html.Span([html.I(className="bi bi-box-arrow-up-right me-1"), f"Yo debo: ${payables:,.2f}"], className="badge bg-danger bg-opacity-10 text-danger p-2")
+            ], className="d-flex justify-content-center")
+            
+        ]), className="metric-card h-100 shadow-sm border-0"), lg=6, md=12, className="mb-4"),
     ]
 
+
 def generate_iou_table(dataframe):
-    """Genera la tabla de Dash con scroll vertical y altura fija."""
+    """Genera la tabla de Dash filtrando solo lo pendiente."""
     if dataframe.empty:
         return html.Div("No hay cuentas pendientes registradas.", className="text-muted fst-italic text-center py-4")
         
-    dataframe = dataframe.copy() 
+    dataframe = dataframe.copy()
+    
+    # --- FILTRO MÁGICO: OCULTAR LO PAGADO ---
+    # Si la columna 'status' existe, filtramos lo que no sea 'Paid'.
+    # Si no, filtramos lo que tenga saldo mayor a 0.01 (para evitar errores de decimales).
+    if 'status' in dataframe.columns:
+        dataframe = dataframe[dataframe['status'] != 'Paid']
+    else:
+        dataframe = dataframe[dataframe['current_amount'].abs() > 0.01]
+
+    # Si después de filtrar no queda nada, mostramos mensaje de vacío
+    if dataframe.empty:
+        return html.Div("¡Todo al día! No tienes cuentas pendientes.", className="text-success fst-italic text-center py-4")
+
     dataframe['action'] = "ℹ️"
     
     # Crear columna visual amigable para el usuario
@@ -103,6 +168,7 @@ def generate_iou_table(dataframe):
             {'if': {'filter_query': '{type} = "Receivable"'}, 'backgroundColor': 'rgba(0, 100, 0, 0.3)', 'color': '#e8f5e9'},
             {'if': {'filter_query': '{type} = "Payable"'}, 'backgroundColor': 'rgba(100, 0, 0, 0.3)', 'color': '#ffebee'},
             {'if': {'column_id': 'action'}, 'textAlign': 'center', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#33b5e5', 'backgroundColor': 'transparent'}, 
+            # Esta condición ya casi no se usará porque filtramos los ceros, pero la dejamos por seguridad
             {'if': {'filter_query': '{current_amount} = 0'}, 'color': '#888', 'fontStyle': 'italic'},
         ],
         
@@ -110,7 +176,6 @@ def generate_iou_table(dataframe):
         page_action='none', 
         page_size=9999,     
     )
-
 # -----------------------------------------------------------------------------
 # 2. DEFINICIÓN DE MODALES
 # -----------------------------------------------------------------------------

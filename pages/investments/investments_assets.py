@@ -193,13 +193,6 @@ layout = dbc.Container([
     delete_confirm_modal,
     investments_transactions.layout,
 
-    dbc.Row([
-        dbc.Col(
-            dbc.Button("+ Agregar Posición", id="btn-open-asset-modal", color="primary", className="mb-4"),
-            width=12
-        )
-    ]),
-
     # 1. EL LOADER (VISIBLE POR DEFECTO)
     html.Div(id="initial-loader", children=[
         dbc.Spinner(color="info", type="grow", size="lg"),
@@ -265,6 +258,10 @@ layout = dbc.Container([
                     searchable=False
                 ),
                 lg=3, md=5
+            ),
+            dbc.Col(
+                dbc.Button("+ Agregar Posición", id="btn-open-asset-modal", color="primary", className="mb-4"),
+                width="auto"
             )
         ], className="mb-4"),
         

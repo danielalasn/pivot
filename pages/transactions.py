@@ -7,6 +7,7 @@ from datetime import date
 import backend.data_manager as dm 
 import time 
 from utils import ui_helpers 
+import pandas as pd
 
 # LISTA FIJA DE CATEGORÍAS MACRO
 MAIN_CATEGORIES = [
@@ -37,7 +38,9 @@ subcat_modal = dbc.Modal([
     dbc.ModalHeader("Crear Nueva Subcategoría"),
     dbc.ModalBody([
         dbc.Label("Pertenece a la Categoría:"),
-        dcc.Dropdown(id="new-subcat-parent-dd", className="mb-3 text-dark"),
+        dcc.Dropdown(
+            id="new-subcat-parent-dd", 
+            className="mb-3 text-dark"),
         dbc.Label("Nombre de la Subcategoría:"),
         dbc.Input(id="new-subcat-name", placeholder="Ej. Netflix, Gasolina...", className="mb-3"),
     ]),
@@ -125,11 +128,11 @@ layout = dbc.Container([
         dbc.Col([
             dbc.Card([
                 dbc.CardHeader("Nueva Transacción"),
-                # pages/transactions.py (Contenido del dbc.CardBody del Formulario)
-
+                
+                # --- CUERPO DEL FORMULARIO ACTUALIZADO ---
                 dbc.CardBody([
                     
-                    # FILA 1: Fecha | Tipo | Monto (Todo en una línea)
+                    # FILA 1: Fecha | Tipo | Monto (Sin cambios)
                     dbc.Row([
                         dbc.Col([
                             dbc.Label("Fecha", className="small mb-0"),
@@ -138,7 +141,17 @@ layout = dbc.Container([
                         dbc.Col([
                             dbc.Label("Tipo", className="small mb-0"),
                             html.Div(
-                                dbc.RadioItems(id="input-trans-type", options=[{"label": "Gasto", "value": "Expense"}, {"label": "Ingreso", "value": "Income"}], value="Expense", inline=True, className="small"),
+                                dbc.RadioItems(
+                                    id="input-trans-type", 
+                                    options=[
+                                        {"label": "Gasto", "value": "Expense"}, 
+                                        {"label": "Ingreso", "value": "Income"},
+                                        {"label": "Mov. Interno", "value": "Transfer"}
+                                    ], 
+                                    value="Expense", 
+                                    inline=True, 
+                                    className="small"
+                                ),
                                 className="mt-1"
                             )
                         ], width=4),
@@ -148,82 +161,118 @@ layout = dbc.Container([
                         ], width=4)
                     ], className="mb-2 g-2"), 
 
-                    # FILA 2: Cuenta | Detalle
+                    # FILA 2: Cuentas (Sin cambios)
                     dbc.Row([
                         dbc.Col([
-                            dbc.Label("Cuenta", className="small mb-0"),
-                            dcc.Dropdown(id="input-account-dd", placeholder="Seleccionar...", className="text-dark small-dropdown"),
+                            dbc.Label(id="label-account-src", children="Cuenta", className="small mb-0"),
+                            dcc.Dropdown(id="input-account-dd", 
+                                         placeholder="Origen...", 
+                                         className="text-dark small-dropdown",optionHeight=65),
                         ], width=6),
+                        dbc.Col([
+                            html.Div(id="dest-account-container", children=[
+                                dbc.Label("Hacia (Destino)", className="small mb-0 fw-bold text-primary"),
+                                dcc.Dropdown(id="input-account-dest-dd", placeholder="Destino...", className="text-dark small-dropdown", optionHeight=65),
+                            ], style={"display": "none"})
+                        ], width=6),
+                    ], className="mb-3 g-2"), # Cambié mb-2 a mb-3 para dar aire antes de las categorías
+
+                    # FILA 3: Categoría | Subcategoría (MOVIDO AQUÍ)
+                    # Nota: Cambié el className de la Row interna a mb-3 (antes mb-4) para que no quede tanto hueco con la nota
+                    html.Div(id="category-input-container", children=[
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Label("Categoría", className="small mb-0"),
+                                dbc.Row([
+                                    dbc.Col(
+                                        dcc.Dropdown(id="input-category", placeholder="Ver...", className="text-dark small-dropdown"), 
+                                        width=10
+                                    ),
+                                    dbc.Col(
+                                        dbc.Button("+", id="btn-open-cat-modal", color="primary", outline=True, size="sm", className="w-100"), 
+                                        width=2,
+                                        className="d-grid ps-1"
+                                    )
+                                ], className="g-0 align-items-end")
+                            ], width=6),
+                            
+                            dbc.Col([
+                                dbc.Label("Subcategoría", className="small mb-0"),
+                                dbc.Row([
+                                    dbc.Col(
+                                        dcc.Dropdown(id="input-subcategory", placeholder="Ver...", className="text-dark small-dropdown"), 
+                                        width=10
+                                    ),
+                                    dbc.Col(
+                                        dbc.Button("+", id="btn-open-subcat-modal", color="info", outline=True, size="sm", className="w-100"), 
+                                        width=2,
+                                        className="d-grid ps-1"
+                                    )
+                                ], className="g-0 align-items-end")
+                            ], width=6),
+                        ], className="mb-3 g-2"), # <--- Ajustado margen aquí
+                    ]),
+
+                    # FILA 4: Nota / Detalle (MOVIDO AL FINAL)
+                    dbc.Row([
                         dbc.Col([
                             dbc.Label("Nota / Detalle", className="small mb-0"),
-                            dbc.Input(id="input-name", placeholder="Ej. Cena...", type="text", size="sm"),
-                        ], width=6),
-                    ], className="mb-2 g-2"),
+                            dbc.Input(id="input-name", placeholder="Ej. Pago de tarjeta...", type="text", size="sm"),
+                        ], width=12),
+                    ], className="mb-4"), # <--- mb-4 aquí para separar bien del botón de registro
 
-                    # FILA 3: Categoría | Subcategoría (CORREGIDA)
-                    dbc.Row([
-                        # Categoría + Botón
-                        dbc.Col([
-                            dbc.Label("Categoría", className="small mb-0"),
-                            dbc.Row([
-                                dbc.Col(
-                                    dcc.Dropdown(id="input-category", placeholder="Ver...", className="text-dark small-dropdown"), 
-                                    width=10
-                                ),
-                                dbc.Col(
-                                    dbc.Button("+", id="btn-open-cat-modal", color="primary", outline=True, size="sm", className="w-100"), 
-                                    width=2,
-                                    className="d-grid ps-1" # ps-1 añade un pequeño margen para separar
-                                )
-                            ], className="g-0 align-items-end") # g-0 asegura que no haya espacio entre el dropdown y el botón
-                        ], width=6),
-                        
-                        # Subcategoría + Botón
-                        dbc.Col([
-                            dbc.Label("Subcategoría", className="small mb-0"),
-                            dbc.Row([
-                                dbc.Col(
-                                    dcc.Dropdown(id="input-subcategory", placeholder="Ver...", className="text-dark small-dropdown"), 
-                                    width=10
-                                ),
-                                dbc.Col(
-                                    dbc.Button("+", id="btn-open-subcat-modal", color="info", outline=True, size="sm", className="w-100"), 
-                                    width=2,
-                                    className="d-grid ps-1"
-                                )
-                            ], className="g-0 align-items-end")
-                        ], width=6),
-                    ], className="mb-4 g-2"),
-
-                    # 7. Botón Registrar
-                    dbc.Button("Registrar Transacción", id="btn-add-trans", color="success", className="w-100 fw-bold", size="md"),
+                    # Botón Registrar
+                    dbc.Button("Registrar", id="btn-add-trans", color="success", className="w-100 fw-bold", size="md"),
                     html.Div(id="msg-add-trans", className="mt-1 text-center small")
                 ])
             ], className="data-card")
-        ], lg=5, md=12, className="mb-4"), # Aumentamos ancho a 5
+        ], lg=5, md=12, className="mb-4"),
 
-        # --- COLUMNA DERECHA: TABLA ---
         # --- COLUMNA DERECHA: TABLA ---
         dbc.Col([
             dbc.Card([
                 dbc.CardHeader("Últimos Movimientos"),
-                # 🚨 ESTILO APLICADO AL CARD BODY 🚨
                 dbc.CardBody(id="trans-table-container", 
                             style={"padding": "0", "maxHeight": "50vh", "overflowY": "auto"}) 
             ],) 
-        ], lg=7, md=12) # lg=7 (Tabla)
+        ], lg=7, md=12)
     ])
 ], fluid=True, className="page-container")
 
 
-# --- FUNCIONES AUXILIARES GLOBALES (TABLA ACTUALIZADA) ---
+# --- FUNCIONES AUXILIARES GLOBALES ---
+# transactions.py - Sustituye la función generate_table con esta:
+
+# transactions.py
+
 def generate_table(dataframe):
     if dataframe.empty:
-        data_to_render = [{'id': -1, 'category': 'No hay transacciones registradas.', 'subcategory': '', 'amount': 0.0, 'action': 'N/A'}]
+        # Fila dummy para evitar errores visuales
+        data_to_render = [{
+            'id': -1, 'date_display': '-', 'type_label': '', 
+            'category': 'No hay transacciones registradas.', 
+            'subcategory': '', 'amount': 0.0, 'action': 'N/A', 'type': 'Expense'
+        }]
         is_empty = True
     else:
+        # 1. ASEGURAR ORDEN CRONOLÓGICO (FECHA + HORA)
+        # Convertimos a datetime real para que el ordenamiento respete la hora
+        dataframe['date'] = pd.to_datetime(dataframe['date'])
+        
+        # Ordenamos descendente (Lo más reciente arriba)
+        dataframe = dataframe.sort_values(by='date', ascending=False)
+
+        # 2. CREAR COLUMNA VISUAL (SOLO FECHA)
+        # Creamos una columna nueva 'date_display' solo con YYYY-MM-DD
+        dataframe['date_display'] = dataframe['date'].dt.strftime('%Y-%m-%d')
+
         dataframe['action'] = "ℹ️"
         dataframe['subcategory'] = dataframe['subcategory'].fillna('')
+        
+        # Mapeo de tipos
+        type_map = {'Expense': 'Gasto', 'Income': 'Ingreso', 'Transfer': 'Mov. Interno'}
+        dataframe['type_label'] = dataframe['type'].map(type_map).fillna(dataframe['type'])
+        
         data_to_render = dataframe.to_dict('records')
         is_empty = False
 
@@ -235,6 +284,9 @@ def generate_table(dataframe):
         data=data_to_render,
         columns=[
             {"name": "ID", "id": "id"}, 
+            # --- AQUÍ MOSTRAMOS LA FECHA LIMPIA (date_display) ---
+            {"name": "Fecha", "id": "date_display"}, 
+            {"name": "Tipo", "id": "type_label"}, 
             {"name": "Categoría", "id": "category"},
             {"name": "Subcategoría", "id": "subcategory"},
             {"name": "Monto", "id": "amount", "type": "numeric", "format": {"specifier": "$,.2f"}},
@@ -250,14 +302,16 @@ def generate_table(dataframe):
         style_data_conditional=[
             {'if': {'column_id': 'id'}, 'display': 'none'},
             
-            # Estilos para el mensaje "No data"
+            # Ajustes para la fila "No data"
             {'if': {'row_index': 0, 'filter_query': '{id} = -1'}, 'color': '#888', 'fontStyle': 'italic', 'height': '60px'},
             {'if': {'row_index': 0, 'filter_query': '{id} = -1', 'column_id': 'amount'}, 'display': 'none'},
             {'if': {'row_index': 0, 'filter_query': '{id} = -1', 'column_id': 'action'}, 'display': 'none'},
+            {'if': {'row_index': 0, 'filter_query': '{id} = -1', 'column_id': 'date_display'}, 'display': 'none'}, # Ocultar fecha en vacío
             
-            # Colores de Gasto/Ingreso
+            # Colores según tipo
             {'if': {'filter_query': '{type} = "Income"'}, 'color': '#00C851', 'fontWeight': 'bold'},
             {'if': {'filter_query': '{type} = "Expense"'}, 'color': '#ff4444', 'fontWeight': 'bold'},
+            {'if': {'filter_query': '{type} = "Transfer"'}, 'color': '#33b5e5', 'fontWeight': 'bold'}, 
             
             {'if': {'column_id': 'action'}, 'textAlign': 'center', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#33b5e5'}
         ],
@@ -265,16 +319,16 @@ def generate_table(dataframe):
         page_size=10,
     )
 
-
 # ------------------------------------------------------------------------------
 # CALLBACKS
 # ------------------------------------------------------------------------------
 
-# 1. Cargar Listas
+# 1. Cargar Listas (ACTUALIZADO: Carga Destination Dropdown)
 @callback(
     [Output("input-account-dd", "options"),
      Output("input-category", "options"),     
-     Output("new-subcat-parent-dd", "options")], 
+     Output("new-subcat-parent-dd", "options"),
+     Output("input-account-dest-dd", "options")], # <--- NUEVO OUTPUT
     [Input("url", "pathname"),
      Input("global-update-signal", "data")]
 )
@@ -282,8 +336,8 @@ def load_initial_data(pathname, signal):
     if pathname == "/transacciones":
         acc_opts = dm.get_account_options()
         cat_opts = dm.get_all_categories_options()
-        return acc_opts, cat_opts, cat_opts
-    return [], [], []
+        return acc_opts, cat_opts, cat_opts, acc_opts # Regresamos acc_opts para el destino también
+    return [], [], [], []
 
 # 1A. Sync Listas en Modal
 @callback(
@@ -295,6 +349,20 @@ def load_initial_data(pathname, signal):
 def sync_modal_dropdowns(acc_opts, cat_opts):
     return acc_opts, cat_opts
 
+# --- NUEVO: CONTROL VISIBILIDAD PARA TRANSFERENCIAS ---
+@callback(
+    [Output("dest-account-container", "style"),
+     Output("category-input-container", "style"),
+     Output("label-account-src", "children")],
+    Input("input-trans-type", "value")
+)
+def toggle_transfer_controls(trans_type):
+    if trans_type == "Transfer":
+        # Mostrar destino, Ocultar categorías, cambiar etiqueta
+        return {"display": "block"}, {"display": "none"}, "Desde (Origen)"
+    else:
+        # Ocultar destino, Mostrar categorías, etiqueta normal
+        return {"display": "none"}, {"display": "block"}, "Cuenta"
 
 # --- GESTIÓN DE CATEGORÍAS (MODAL CAT) ---
 @callback(
@@ -375,7 +443,7 @@ def update_subcats_modal(parent, sig):
     return dm.get_subcategories_by_parent(parent)
 
 
-# 2. Registrar Transacción
+# 2. Registrar Transacción (ACTUALIZADO CON LÓGICA DE TRANSFERENCIA)
 @callback(
     [Output("msg-add-trans", "children"),
      Output("trans-table-container", "children"),
@@ -388,22 +456,41 @@ def update_subcats_modal(parent, sig):
      State("input-category", "value"),
      State("input-trans-type", "value"),
      State("input-account-dd", "value"),
-     State("input-subcategory", "value")]
+     State("input-subcategory", "value"),
+     State("input-account-dest-dd", "value")] # <--- NUEVO ESTADO: Destino
 )
-def add_transaction_callback(n_clicks, date_val, name, amount, category, t_type, acc_id, subcat):
+def add_transaction_callback(n_clicks, date_val, name, amount, category, t_type, acc_id, subcat, dest_acc_id):
     df = dm.get_transactions_df()
     if not n_clicks: return "", generate_table(df), no_update, no_update
 
-    if not all([date_val, amount, category, t_type, acc_id]):
+    # Validaciones básicas
+    if not all([date_val, amount, t_type, acc_id]):
         return html.Span("Faltan campos obligatorios.", className="text-danger"), generate_table(df), no_update, no_update
+    
+    try: amt = float(amount)
+    except: return html.Span("Monto inválido", className="text-danger"), generate_table(df), no_update, no_update
     
     final_name = name if name else "-"
 
-    try: amt = float(amount)
-    except: return html.Span("Monto inválido", className="text-danger"), generate_table(df), no_update, no_update
+    # --- LÓGICA DIFERENCIADA ---
+    if t_type == "Transfer":
+        # CASO: TRANSFERENCIA
+        if not dest_acc_id:
+             return html.Span("Selecciona la cuenta destino.", className="text-danger"), generate_table(df), no_update, no_update
+        if str(acc_id) == str(dest_acc_id):
+             return html.Span("Origen y destino son iguales.", className="text-danger"), generate_table(df), no_update, no_update
 
-    success, msg = dm.add_transaction(date_val, final_name, amt, category, t_type, acc_id, subcat)
+        # Llamada a función backend de transferencia
+        success, msg = dm.add_transfer(date_val, final_name, amt, acc_id, dest_acc_id)
+
+    else:
+        # CASO: INGRESO O GASTO NORMAL
+        if not category:
+            return html.Span("Falta la categoría.", className="text-danger"), generate_table(df), no_update, no_update
+        
+        success, msg = dm.add_transaction(date_val, final_name, amt, category, t_type, acc_id, subcat)
     
+    # RESPUESTA
     if success:
         df_new = dm.get_transactions_df()
         return html.Span(msg, className="text-success"), generate_table(df_new), "", ""

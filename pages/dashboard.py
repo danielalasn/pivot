@@ -19,23 +19,35 @@ layout = dbc.Container(
         ]),
 
         # --- FILA 1: PATRIMONIO (KPIs) CON BOTÓN DE REFRESCO ---
+        # --- FILA 1: PATRIMONIO (KPIs) CON BOTÓN DE REFRESCO ---
         dbc.Row([
             dbc.Col(html.H5("Mi Patrimonio", className="text-primary mb-0"), width="auto", className="d-flex align-items-center"),
+            
             dbc.Col([
-                # BOTÓN DE REFRESCO DE INVERSIONES
-                dbc.Button(
-                    html.I(className="bi bi-arrow-clockwise"), 
-                    id="btn-refresh-investments", 
-                    color="link", 
-                    size="sm", 
-                    className="p-0 ms-2 text-decoration-none text-muted",
-                    title="Actualizar precios de mercado ahora"
-                ),
-                # ETIQUETA DE FECHA DE ACTUALIZACIÓN
-                html.Small(id="last-updated-label", className="text-muted ms-2 small fst-italic")
+                # COMPONENTE DE CARGA (Loading)
+                # Envuelve el botón y el label para mostrar actividad
+                dcc.Loading(
+                    id="loading-refresh-data",
+                    type="circle", # Puedes usar: 'graph', 'cube', 'circle', 'dot'
+                    color="#2A9FD6", # Color de tu tema
+                    children=[
+                        html.Div([ # Contenedor flex interno
+                            dbc.Button(
+                                html.I(className="bi bi-arrow-clockwise"), 
+                                id="btn-refresh-investments", 
+                                color="link", 
+                                size="sm", 
+                                className="p-0 ms-2 text-decoration-none text-muted",
+                                title="Actualizar precios de mercado ahora (Lento)"
+                            ),
+                            # ETIQUETA DE FECHA DE ACTUALIZACIÓN
+                            html.Small(id="last-updated-label", className="text-muted ms-2 small fst-italic")
+                        ], className="d-flex align-items-center")
+                    ]
+                )
             ], width="auto", className="d-flex align-items-center"),
         ], className="mb-3 align-items-center"),
-
+        
         dbc.Row([
             # 1. PATRIMONIO NETO (Total)
              dbc.Col(
