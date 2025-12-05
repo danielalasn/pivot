@@ -1,156 +1,145 @@
+# index.py
 import dash
 from dash import dcc, html, Input, Output, State, clientside_callback, ctx
 import dash_bootstrap_components as dbc
+from flask_login import current_user, logout_user
 
-# Importar la app principal
+# Importar la app y páginas
 from app import app, server
-
-# Importar los layouts de las páginas
-from pages import dashboard, transactions, debts
+# 🚨 CAMBIO 1: Agregamos 'register' a la lista de importaciones iniciales
+from pages import dashboard, transactions, debts, login, register 
 from pages.accounts import accounts 
-
-# 🚨 CAMBIO 1: Importamos el archivo 'padre' que tiene las tabs
 from pages.investments import investments 
 
 # ------------------------------------------------------------------------------
-# 1. CONTENIDO DEL OFFCANVAS (Sidebar)
+# 1. CONTENIDO DEL SIDEBAR (Solo se mostrará si hay login)
 # ------------------------------------------------------------------------------
-
-# Lista de enlaces de navegación
 nav_links = [
     dbc.NavLink([html.I(className="bi bi-house me-2"), "Dashboard"], href="/", active="exact"),
     dbc.NavLink([html.I(className="bi bi-receipt me-2"), "Transacciones"], href="/transacciones", active="exact"),
     dbc.NavLink([html.I(className="bi bi-wallet2 me-2"), "Cuentas"], href="/cuentas", active="exact"),
-    dbc.NavLink([html.I(className="bi bi-arrow-left-right me-2"), "Deudas y Cobros"], href="/deudas", active="exact"), 
-    dbc.NavLink([html.I(className="bi bi-bullseye me-2"), "Metas"], href="/metas", active="exact"),
+    dbc.NavLink([html.I(className="bi bi-arrow-left-right me-2"), "Deudas"], href="/deudas", active="exact"), 
     dbc.NavLink([html.I(className="bi bi-graph-up me-2"), "Inversiones"], href="/inversiones", active="exact"),
-    dbc.NavLink([html.I(className="bi bi-lightbulb me-2"), "Consejos"], href="/consejos", active="exact"),
+    
+    # Botón de Salir (Logout)
+    dbc.NavLink([html.I(className="bi bi-box-arrow-left me-2 text-danger"), "Cerrar Sesión"], href="/logout", active="exact", className="mt-4 border-top border-secondary pt-3"),
 ]
 
-# Contenido del Offcanvas
-offcanvas_content = html.Div(
-    [
-        # Encabezado personalizado
-        html.H1("Pívot", className="offcanvas-header-title-custom"),
-
-        html.Hr(className="sidebar-divider"),
-        
-        # Navegación
-        dbc.Nav(nav_links, vertical=True, pills=True, id="nav-list"), 
-        
-        # Switch de tema
-        html.Div([
-            dbc.Label("Modo Claro", html_for="theme-switch", className="text-muted small mb-1"),
-            dbc.Switch(
-                id="theme-switch",
-                value=False,
-                className="d-inline-block ms-2",
-                persistence=True, 
-                persistence_type='local'
-            ),
-        ], className="d-flex align-items-center justify-content-center pt-3 pb-2")
-    ],
-    className="h-100 d-flex flex-column" 
+sidebar = dbc.Offcanvas(
+    html.Div([
+        html.H2("Pívot", className="offcanvas-header-title-custom mb-4"),
+        dbc.Nav(nav_links, vertical=True, pills=True),
+    ], className="h-100 d-flex flex-column"),
+    id="offcanvas-sidebar",
+    is_open=False,
+    placement="start",
+    className="offcanvas-custom",
+    backdrop=True 
 )
 
 # ------------------------------------------------------------------------------
-# 2. NAVBAR (Encabezado Fijo)
+# 2. NAVBAR (Solo visible si hay login)
 # ------------------------------------------------------------------------------
 navbar = dbc.Navbar(
-    dbc.Container(
-        [
-            dbc.Row(
-                [
-                    # Botón Hamburguesa
-                    dbc.Col(
-                        dbc.Button(
-                            html.I(className="bi bi-list text-white", style={"fontSize": "1.8rem"}), 
-                            id="open-offcanvas-btn",
-                            n_clicks=0,
-                            className="p-1", 
-                            style={"border": "none", "backgroundColor": "transparent"} 
-                        ),
-                        width="auto",
-                        className="d-flex align-items-center me-2"
-                    ),
-                    
-                    # Título
-                    dbc.Col(
-                        html.A(
-                            html.H1(
-                                "Pívot",
-                                className="mb-0 navbar-brand text-white fw-bolder",
-                                style={"fontSize": "1.5rem"}
-                            ),
-                            href="/",
-                            style={"textDecoration": "none"},
-                        ),
-                        width="auto",
-                        className="d-flex align-items-center"
-                    ),
-                ],
-                align="center",
-                className="g-0 flex-grow-1", 
+    dbc.Container([
+        dbc.Row([
+            dbc.Col(
+                dbc.Button(html.I(className="bi bi-list text-white fs-2"), id="open-offcanvas-btn", color="link", className="p-0"),
+                width="auto"
             ),
-            html.Div(className="ms-auto")
-        ],
-        fluid=True,
-        className="px-3 py-2" 
-    ),
+            dbc.Col(
+                dbc.NavbarBrand("Pívot Finance", className="ms-3 fw-bold"),
+                width="auto"
+            ),
+        ], align="center", className="g-0"),
+    ], fluid=True),
     id="main-navbar",
     color="dark",
     dark=True,
-    fixed="top", 
-    style={"zIndex": 1020, "borderBottom": "none"} 
+    fixed="top",
+    style={"display": "none"} 
 )
-
 
 # ------------------------------------------------------------------------------
 # LAYOUT PRINCIPAL
 # ------------------------------------------------------------------------------
 app.layout = html.Div([
     dcc.Location(id="url", refresh=False),
-    dcc.Store(id="theme-store"), 
     
-    navbar, 
+    navbar,  
+    sidebar, 
     
-    html.Div(id="page-content", className="main-content"),
-    
-    dbc.Offcanvas(
-        offcanvas_content,
-        id="offcanvas-sidebar",
-        title="", 
-        is_open=False,
-        placement="start",
-        scrollable=True,
-        className="offcanvas-custom",
-        backdrop=True 
-    ),
-    
-], id="main-container")
-
+    html.Div(id="page-content", className="main-content p-0"),
+])
 
 # ------------------------------------------------------------------------------
-# CALLBACKS
+# CALLBACKS DE NAVEGACIÓN Y SEGURIDAD
 # ------------------------------------------------------------------------------
 
 @app.callback(
+    Output("page-content", "children"),
+    Input("url", "pathname")
+)
+def display_page(pathname):
+    # A. Manejo de Logout
+    if pathname == "/logout":
+        if current_user.is_authenticated:
+            logout_user()
+        return login.layout
+
+    # B. Rutas Públicas (Solo Login y Registro)
+    if pathname == "/login":
+        if current_user.is_authenticated: return dashboard.layout 
+        return login.layout
+    
+    # 🚨 CAMBIO 2: Ya no importamos 'register' aquí adentro, usamos el global
+    if pathname == "/register":
+        if current_user.is_authenticated: return dashboard.layout
+        return register.layout # Usa la variable importada arriba
+
+    # C. Rutas Privadas (Requieren Auth)
+    if current_user.is_authenticated:
+        if pathname == "/" or pathname == "/dashboard":
+            return dashboard.layout
+        elif pathname == "/transacciones":
+            return transactions.layout
+        elif pathname == "/cuentas":
+            return accounts.layout
+        elif pathname == "/deudas":
+            return debts.layout
+        elif pathname == "/inversiones":
+            return investments.layout
+        else:
+            return html.Div([html.H1("404"), html.P("Página no encontrada")], className="p-5 text-center")
+    
+    # D. Si no está logueado y trata de entrar a una privada -> Login
+    return login.layout
+
+
+@app.callback(
+    [Output("main-navbar", "style"), 
+     Output("page-content", "className")], 
+    Input("url", "pathname")
+)
+def toggle_navbar_visibility(pathname):
+    # 🚨 CAMBIO 3: Añadimos "/register" a la lista de páginas sin menú
+    if pathname == "/login" or pathname == "/register" or pathname == "/logout" or not current_user.is_authenticated:
+        return {"display": "none"}, "main-content p-0"
+    
+    return {"display": "block"}, "main-content pt-5 mt-5 px-4"
+
+
+@app.callback(
     Output("offcanvas-sidebar", "is_open"),
-    [Input("open-offcanvas-btn", "n_clicks"), 
-     Input("url", "pathname")],
+    [Input("open-offcanvas-btn", "n_clicks"), Input("url", "pathname")],
     [State("offcanvas-sidebar", "is_open")],
     prevent_initial_call=True
 )
-def toggle_offcanvas_and_close_on_nav(n_clicks, pathname, is_open):
-    trig_id = ctx.triggered_id
-
-    if trig_id == "open-offcanvas-btn":
+def toggle_sidebar(n, pathname, is_open):
+    trig = ctx.triggered_id
+    if trig == "open-offcanvas-btn":
         return not is_open
-    
-    if trig_id == "url" and is_open:
-        return False
-        
-    return is_open
+    return False
 
 clientside_callback(
     """
@@ -167,42 +156,6 @@ clientside_callback(
     Output("theme-store", "data"),
     Input("theme-switch", "value"),
 )
-
-
-# ------------------------------------------------------------------------------
-# CALLBACK PARA RENDERIZAR PÁGINAS
-# ------------------------------------------------------------------------------
-@app.callback(
-    Output("page-content", "children"),
-    [Input("url", "pathname")]
-)
-def display_page(pathname):
-    if pathname == "/":
-        return dashboard.layout
-    elif pathname == "/transacciones":
-        return transactions.layout
-    elif pathname == "/cuentas":
-        return accounts.layout
-    elif pathname == "/deudas":
-        return debts.layout
-    elif pathname == "/metas":
-        return html.P("Página de Metas (en construcción)")
-    elif pathname == "/inversiones":
-        # 🚨 CAMBIO 2: Llamamos al layout 'padre' (investments.layout) 
-        # que contiene las pestañas, no al 'hijo' (assets)
-        return investments.layout
-    elif pathname == "/consejos":
-         return html.P("Página de Consejos (en construcción)")
-    
-    return dbc.Container(
-        [
-            html.H1("404: No encontrado", className="text-danger"),
-            html.Hr(),
-            html.P(f"El pathname {pathname} no fue reconocido..."),
-        ],
-        fluid=True,
-        className="py-3",
-    )
 
 if __name__ == "__main__":
     app.run(debug=True, port=8050)

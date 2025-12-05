@@ -9,6 +9,7 @@ import pandas as pd
 import json 
 from utils import ui_helpers 
 import plotly.graph_objects as go # Necesario para create_empty_bar
+from io import StringIO
 
 # --- FUNCIONES AUXILIARES ---
 
@@ -106,7 +107,7 @@ def render_transaction_history_table(json_history):
 
     try:
         # Intentamos convertir el JSON a DataFrame
-        df_history = pd.read_json(json_history, orient='split')
+        df_history = pd.read_json(StringIO(json_history), orient='split')
     except ValueError:
         # Si falla (por cualquier motivo de formato), mostramos cargando en vez de romper la app
         return html.Div("Cargando datos...", className="text-muted text-center")

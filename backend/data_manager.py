@@ -1,50 +1,40 @@
 import sqlite3
 import pandas as pd
 import os
-from datetime import date, timedelta
+from datetime import date, datetime
 import calendar
-import finnhub # NUEVA LIBRERÍA
+import finnhub
 import time
 import json
+from dotenv import load_dotenv
+from pathlib import Path
+from flask_login import current_user  
 
-from dotenv import load_dotenv # IMPORTAR ESTO
 
-# backend/data_manager.py
-
-import sqlite3
-import pandas as pd
-import os
-from datetime import date
-import finnhub
-from dotenv import load_dotenv 
-from pathlib import Path # 
-
-# --- CARGA ROBUSTA DE ENV ---
-# Esto busca el archivo .env en la carpeta RAÍZ del proyecto,
-# subiendo un nivel desde donde está este archivo (backend/)
 base_dir = Path(__file__).resolve().parent.parent
 env_path = base_dir / '.env'
-
 load_dotenv(dotenv_path=env_path)
 
-# --- CONFIGURACIÓN ---
 DB_DIR = "data"
-# ... resto del código ...
 DB_PATH = os.path.join(DB_DIR, "pivot.db")
 
-# OBTENER LA CLAVE DE MANERA SEGURA
-# Si no encuentra la clave, usará None o puedes poner un string vacío
 api_key = os.getenv("FINNHUB_API_KEY")
 
 if api_key:
     finnhub_client = finnhub.Client(api_key=api_key)
 else:
     print("⚠️ ADVERTENCIA: No se encontró FINNHUB_API_KEY en el archivo .env")
-    # Creamos un cliente dummy o manejamos el error para que no rompa el import
     finnhub_client = None 
 
 def get_connection():
     return sqlite3.connect(DB_PATH)
+
+def get_uid():
+    """Retorna el ID del usuario actual de manera segura."""
+    if current_user and current_user.is_authenticated:
+        return current_user.id
+    return 1 # Fallback al Admin (ID 1) si algo falla, para no romper en pruebas
+
 
 # --- LISTAS DE DETECCIÓN MANUAL (Para forzar tipos correctos) ---
 KNOWN_ETFS = [
@@ -75,19 +65,20 @@ def detect_asset_type(ticker, sector=None):
 # --- GESTIÓN DE CUENTAS ---
 
 # Definición robusta con kwargs para evitar errores si faltan argumentos
-def add_account(name, acc_type, balance, bank_name="-", credit_limit=0, payment_day=None, cutoff_day=None, interest_rate=0, deferred_balance=0, installments_total=0, installments_paid=0, installments_day=0):
+def add_account(name, acc_type, balance, bank_name="-", credit_limit=0, payment_day=None, cutoff_day=None, interest_rate=0, deferred_balance=0, **kwargs):
     conn = get_connection()
     cursor = conn.cursor()
+    uid = get_uid() # Obtener ID del usuario
     try:
-        cursor.execute("SELECT MAX(display_order) FROM accounts")
+        # Calcular orden solo para este usuario
+        cursor.execute("SELECT MAX(display_order) FROM accounts WHERE user_id = ?", (uid,))
         res = cursor.fetchone()
-        max_order = res[0] if res[0] is not None else 0
-        new_order = max_order + 1
+        new_order = (res[0] if res[0] is not None else 0) + 1
 
         cursor.execute("""
-            INSERT INTO accounts (name, type, current_balance, bank_name, credit_limit, payment_day, cutoff_day, interest_rate, display_order, deferred_balance)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (name, acc_type, balance, bank_name, credit_limit, payment_day, cutoff_day, interest_rate, new_order, deferred_balance))
+            INSERT INTO accounts (user_id, name, type, current_balance, bank_name, credit_limit, payment_day, cutoff_day, interest_rate, display_order, deferred_balance)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (uid, name, acc_type, balance, bank_name, credit_limit, payment_day, cutoff_day, interest_rate, new_order, deferred_balance))
         conn.commit()
         return True, "Cuenta creada exitosamente."
     except Exception as e:
@@ -95,40 +86,44 @@ def add_account(name, acc_type, balance, bank_name="-", credit_limit=0, payment_
     finally:
         conn.close()
 
-def update_account(account_id, name, acc_type, balance, bank_name, credit_limit, payment_day, cutoff_day, interest_rate=0, deferred_balance=0, installments_total=0, installments_paid=0, installments_day=0):
+def update_account(account_id, name, acc_type, balance, bank_name, credit_limit, payment_day, cutoff_day, interest_rate=0, deferred_balance=0, **kwargs):
     conn = get_connection()
     cursor = conn.cursor()
+    uid = get_uid()
     try:
+        # Añadimos "AND user_id = ?" para seguridad: nadie edita lo que no es suyo
         cursor.execute("""
             UPDATE accounts 
             SET name = ?, type = ?, current_balance = ?, bank_name = ?, credit_limit = ?, payment_day = ?, cutoff_day = ?, interest_rate = ?, deferred_balance = ?
-            WHERE id = ?
-        """, (name, acc_type, balance, bank_name, credit_limit, payment_day, cutoff_day, interest_rate, deferred_balance, account_id))
+            WHERE id = ? AND user_id = ?
+        """, (name, acc_type, balance, bank_name, credit_limit, payment_day, cutoff_day, interest_rate, deferred_balance, account_id, uid))
         conn.commit()
-        return True, "Cuenta actualizada exitosamente."
+        return True, "Cuenta actualizada."
     except Exception as e:
-        return False, f"Error al actualizar: {str(e)}"
+        return False, str(e)
     finally:
         conn.close()
 
 def delete_account(account_id):
     conn = get_connection()
     cursor = conn.cursor()
+    uid = get_uid()
     try:
-        cursor.execute("DELETE FROM transactions WHERE account_id = ?", (account_id,))
-        cursor.execute("DELETE FROM installments WHERE account_id = ?", (account_id,)) 
-        cursor.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+        # Solo borrar si pertenece al usuario
+        cursor.execute("DELETE FROM transactions WHERE account_id = ? AND user_id = ?", (account_id, uid))
+        cursor.execute("DELETE FROM installments WHERE account_id = ? AND user_id = ?", (account_id, uid))
+        cursor.execute("DELETE FROM accounts WHERE id = ? AND user_id = ?", (account_id, uid))
         conn.commit()
         return True, "Cuenta eliminada."
-    except Exception as e:
-        return False, f"Error al eliminar: {str(e)}"
-    finally:
-        conn.close()
+    except Exception as e: return False, str(e)
+    finally: conn.close()
 
 def get_accounts_by_category(category_group):
     conn = get_connection()
+    uid = get_uid()
     try:
-        df = pd.read_sql_query("SELECT * FROM accounts ORDER BY display_order ASC", conn)
+        # Filtramos por usuario
+        df = pd.read_sql_query("SELECT * FROM accounts WHERE user_id = ? ORDER BY display_order ASC", conn, params=(uid,))
         if df.empty: return df
         
         df.fillna(0, inplace=True)
@@ -136,37 +131,32 @@ def get_accounts_by_category(category_group):
         
         if category_group == 'Credit':
             df = df[df['type'] == 'Credit']
-            
-            # Calcular total real de financiamientos
-            installments_df = pd.read_sql_query("SELECT * FROM installments", conn)
+            # También filtramos installments por usuario
+            installments_df = pd.read_sql_query("SELECT * FROM installments WHERE user_id = ?", conn, params=(uid,))
             
             def calc_total_installments(acc_id):
                 if installments_df.empty: return 0.0
                 my_installs = installments_df[installments_df['account_id'] == acc_id]
-                total_pending = 0.0
+                total = 0.0
                 for _, row in my_installs.iterrows():
                     if row['total_quotas'] > 0:
-                        # --- LÓGICA NUEVA ---
-                        total_with_interest = row['total_amount'] * (1 + (row['interest_rate'] / 100))
-                        quota_val = total_with_interest / row['total_quotas']
-                        # --------------------
-                        
+                        total_with_int = row['total_amount'] * (1 + (row['interest_rate'] / 100))
+                        quota_val = total_with_int / row['total_quotas']
                         remaining = row['total_quotas'] - row['paid_quotas']
-                        total_pending += quota_val * remaining
-                return total_pending
+                        total += quota_val * remaining
+                return total
 
             df['installments_pending_total'] = df['id'].apply(calc_total_installments)
         else:
             df = df[df['type'] != 'Credit']
             
         df.reset_index(drop=True, inplace=True)
-    except:
-        df = pd.DataFrame()
-    finally:
-        conn.close()
+    except: df = pd.DataFrame()
+    finally: conn.close()
     return df
 
 def change_account_order(account_id, direction, category_group):
+    # Reutiliza get_accounts_by_category que ya filtra por usuario, así que es seguro
     df = get_accounts_by_category(category_group)
     if df.empty: return
     try:
@@ -180,129 +170,87 @@ def change_account_order(account_id, direction, category_group):
     if swap_idx is not None:
         id1, order1 = df.iloc[idx]['id'], df.iloc[idx]['display_order']
         id2, order2 = df.iloc[swap_idx]['id'], df.iloc[swap_idx]['display_order']
+        # Validar consistencia
         if order1 == order2: order1, order2 = idx + 1, swap_idx + 1
+        
         conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE accounts SET display_order = ? WHERE id = ?", (int(order2), int(id1)))
-        cursor.execute("UPDATE accounts SET display_order = ? WHERE id = ?", (int(order1), int(id2)))
+        uid = get_uid()
+        # Update seguro con user_id
+        conn.execute("UPDATE accounts SET display_order = ? WHERE id = ? AND user_id = ?", (int(order2), int(id1), uid))
+        conn.execute("UPDATE accounts SET display_order = ? WHERE id = ? AND user_id = ?", (int(order1), int(id2), uid))
         conn.commit()
         conn.close()
 
-# backend/data_manager.py
-
-# backend/data_manager.py
-
 def get_account_options():
-    """
-    Retorna opciones formateadas para dropdowns.
-    - Crédito: Muestra 'Disponible' (Límite - Deuda).
-    - Débito/Efectivo: Muestra 'Saldo Actual'.
-    - Usa un salto de línea (\n) para separar nombre y monto visualmente.
-    """
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    # 1. Obtener Cuentas (AÑADIMOS credit_limit A LA CONSULTA)
+    uid = get_uid()
+    options = []
     try:
-        cursor.execute("SELECT id, name, bank_name, type, current_balance, credit_limit FROM accounts ORDER BY display_order ASC")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, bank_name, type, current_balance, credit_limit FROM accounts WHERE user_id = ? ORDER BY display_order ASC", (uid,))
         data = cursor.fetchall()
-        
-        options = []
         for i, name, bank, atype, balance, limit in data:
-            
-            # Lógica para mostrar el monto correcto
             if atype == 'Credit':
-                # CALCULAR DISPONIBLE: Límite - Deuda Actual
-                # Asumimos que 'balance' en DB es la deuda positiva.
-                val_to_show = float(limit) - float(balance)
-                amount_str = f"Disponible: ${val_to_show:,.2f}"
-                text_color_class = "" # El CSS se encargará, pero el texto ayuda
+                val = float(limit) - float(balance)
+                amt_str = f"Disponible: ${val:,.2f}"
             else:
-                # Para débito es el saldo directo
-                val_to_show = balance
-                amount_str = f"Saldo: ${val_to_show:,.2f}"
-
-            # Construir la etiqueta con SALTO DE LÍNEA (\n)
-            # Línea 1: Nombre - Banco
-            # Línea 2: Monto
-            label = f"{name} - {bank} ({atype})\n{amount_str}"
-            
-            options.append({'label': label, 'value': i})
-            
-    except Exception as e: 
-        print(f"Error fetching accounts for options: {e}")
-        options = []
+                amt_str = f"Saldo: ${balance:,.2f}"
+            options.append({'label': f"{name} - {bank} ({atype})\n{amt_str}", 'value': i})
+    except: pass
     
-    # 2. Obtener Saldo de Reserva
-    try:
-        reserve_bal = get_credit_abono_reserve()
-    except:
-        reserve_bal = 0.0
-
-    # Opción de Reserva (También con salto de línea)
-    reserve_option = {
-        'label': f"Reserva de Abono\nDisponible: ${reserve_bal:,.2f}", 
-        'value': 'RESERVE'
-    }
-    
-    options.append(reserve_option) 
+    # Reserva (Usuario específico)
+    try: res = get_credit_abono_reserve()
+    except: res = 0.0
+    options.append({'label': f"Reserva de Abono\nDisponible: ${res:,.2f}", 'value': 'RESERVE'})
     
     conn.close()
     return options
 
 
 def get_account_type_summary():
-    """Calcula el total de activos y pasivos con desglose detallado."""
+    """Resumen de Activos vs Pasivos para el Mini-Dashboard de Cuentas."""
     conn = get_connection()
+    uid = get_uid()
     summary = {}
     try:
-        # 1. CÁLCULO DE ACTIVOS
-        df_accounts = pd.read_sql_query("SELECT type, current_balance FROM accounts", conn)
-        liquid_assets = df_accounts[df_accounts['type'].isin(['Debit', 'Cash'])]['current_balance'].sum()
+        # 1. Obtener cuentas del usuario
+        df_accounts = pd.read_sql_query("SELECT id, type, current_balance FROM accounts WHERE user_id = ?", conn, params=(uid,))
         
+        liquid_assets = df_accounts[df_accounts['type'].isin(['Debit', 'Cash'])]['current_balance'].sum()
+        total_liabilities_cards = df_accounts[df_accounts['type'] == 'Credit']['current_balance'].sum()
+        
+        # 2. Reserva del usuario
         try: reserve_bal = get_credit_abono_reserve()
         except: reserve_bal = 0.0
             
-        # 2. CÁLCULO DE PASIVOS
-        # Deuda Total Tarjetas
-        total_liabilities_cards = df_accounts[df_accounts['type'] == 'Credit']['current_balance'].sum()
-        
-        # Deuda Informal (IOU por Pagar)
-        df_iou = pd.read_sql_query("SELECT type, current_amount FROM iou WHERE status = 'Pending'", conn)
+        # 3. IOU (Informal) del usuario
+        df_iou = pd.read_sql_query("SELECT type, current_amount FROM iou WHERE status = 'Pending' AND user_id = ?", conn, params=(uid,))
         liabilities_informal = df_iou[df_iou['type'] == 'Payable']['current_amount'].sum() if not df_iou.empty else 0.0
         
-        # Obtener detalle de Cuotas (Installments)
+        # 4. Obtener detalle de Cuotas (del usuario)
         credit_data = get_credit_summary_data() 
         installments_debt = credit_data['total_installments']
 
-        # --- RESULTADOS FINALES ---
-        
-        # ACTIVOS
+        # Consolidados
         summary['TotalAssets'] = liquid_assets + reserve_bal
         summary['LiquidAssets'] = liquid_assets
         summary['ReserveAssets'] = reserve_bal
         
-        # PASIVOS
         total_liabilities = total_liabilities_cards + liabilities_informal
-        
-        # Desglose Pasivos:
-        # Inmediato = (Deuda Total - Cuotas)
-        # Nota: "Deuda Total" ya incluye lo informal, así que al restar cuotas nos queda todo lo que hay que pagar ya.
-        immediate_debt = total_liabilities - installments_debt
-        if immediate_debt < 0: immediate_debt = 0 # Seguridad
+        immediate_debt = max(0, total_liabilities - installments_debt)
         
         summary['TotalLiabilities'] = total_liabilities
-        summary['InstallmentsDebt'] = installments_debt # A Plazos
-        summary['ImmediateDebt'] = immediate_debt       # Al día / Exigible
+        summary['InstallmentsDebt'] = installments_debt
+        summary['ImmediateDebt'] = immediate_debt
         
     except Exception as e:
-        print(f"Error getting account type summary: {e}")
-        # Retorno seguro en caso de error
         for k in ['TotalAssets', 'LiquidAssets', 'ReserveAssets', 'TotalLiabilities', 'InstallmentsDebt', 'ImmediateDebt']:
             summary[k] = 0.0
     finally:
         conn.close()
     return summary
+
+
 
 def get_debit_category_summary():
     """Obtiene la suma de transacciones por categoría y tipo (Expense/Income) 
@@ -334,46 +282,41 @@ def get_debit_category_summary():
 
 # data_manager.py
 
+
 def get_debit_bank_summary():
-    """Obtiene el saldo total por banco para cuentas de Débito/Efectivo."""
+    """Saldo por banco (Débito/Cash) del usuario."""
     conn = get_connection()
+    uid = get_uid()
     try:
-        query = """
+        df = pd.read_sql_query("""
             SELECT bank_name, SUM(current_balance) as total_balance
             FROM accounts
-            WHERE type IN ('Debit', 'Cash')
+            WHERE type IN ('Debit', 'Cash') AND user_id = ?
             GROUP BY bank_name
             HAVING total_balance > 0
-        """
-        df = pd.read_sql_query(query, conn)
+        """, conn, params=(uid,))
         return df
-    except Exception as e:
-        print(f"Error getting debit bank summary: {e}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
+    finally: conn.close()
+
 
 # data_manager.py
 
 def get_credit_summary_data():
-    """Obtiene métricas clave: Límite Total, Deuda Total y Deuda de Financiamientos."""
+    """Métricas de Crédito (Límite, Deuda, Cuotas) filtradas por usuario."""
     conn = get_connection()
-    summary = {
-        'total_limit': 0.0,
-        'total_debt': 0.0,
-        'total_installments': 0.0
-    }
+    uid = get_uid()
+    summary = {'total_limit': 0.0, 'total_debt': 0.0, 'total_installments': 0.0}
     try:
-        df = pd.read_sql_query("SELECT id, credit_limit, current_balance FROM accounts WHERE type = 'Credit'", conn)
+        # Solo tarjetas del usuario
+        df = pd.read_sql_query("SELECT id, credit_limit, current_balance FROM accounts WHERE type = 'Credit' AND user_id = ?", conn, params=(uid,))
         
-        if df.empty:
-            return summary
+        if df.empty: return summary
 
         summary['total_limit'] = df['credit_limit'].sum()
         summary['total_debt'] = df['current_balance'].sum()
         
-        # Calcular la deuda pendiente de financiamientos usando la lógica de amortización
-        installments_df = pd.read_sql_query("SELECT * FROM installments", conn)
+        # Solo cuotas del usuario
+        installments_df = pd.read_sql_query("SELECT * FROM installments WHERE user_id = ?", conn, params=(uid,))
         total_pending = 0.0
         
         for _, row in df.iterrows():
@@ -381,35 +324,19 @@ def get_credit_summary_data():
             my_installs = installments_df[installments_df['account_id'] == acc_id]
             
             for _, inst_row in my_installs.iterrows():
-                tq = inst_row['total_quotas']
-                pq = inst_row['paid_quotas']
-                
-                if tq > 0:
-                    annual_rate = inst_row['interest_rate']
-                    amount = inst_row['total_amount']
-                    
-                    if annual_rate > 0:
-                        i = annual_rate / 12 / 100
-                        n = tq
-                        denominator = ((1 + i) ** n) - 1
-                        if denominator != 0:
-                            numerator = i * ((1 + i) ** n)
-                            q_val = amount * (numerator / denominator)
-                        else:
-                            q_val = amount / tq
-                    else:
-                        q_val = amount / tq
-                    
-                    remaining = tq - pq
-                    total_pending += q_val * remaining
+                if inst_row['total_quotas'] > 0:
+                    total_with_int = inst_row['total_amount'] * (1 + (inst_row['interest_rate'] / 100))
+                    quota_val = total_with_int / inst_row['total_quotas']
+                    remaining = inst_row['total_quotas'] - inst_row['paid_quotas']
+                    total_pending += quota_val * remaining
         
         summary['total_installments'] = total_pending
         
-    except Exception as e:
-        print(f"Error getting credit summary data: {e}")
     finally:
         conn.close()
     return summary
+
+
 
 def get_asset_type_summary():
     """Calcula el saldo total agrupado por el tipo de cuenta (Debit, Cash)."""
@@ -482,27 +409,19 @@ def delete_installment(installment_id):
     finally: conn.close()
 
 # --- TRANSACCIONES Y ANALYTICS ---
-def add_transaction(date, name, amount, category, trans_type, account_id):
+def add_transaction(date, name, amount, category, trans_type, account_id, subcategory=None):
     conn = get_connection()
     cursor = conn.cursor()
+    uid = get_uid()
     try:
-        cursor.execute("INSERT INTO transactions (date, name, amount, category, type, account_id) VALUES (?, ?, ?, ?, ?, ?)", 
-                       (date, name, amount, category, trans_type, account_id))
+        # Insertar con user_id
+        cursor.execute("""
+            INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (uid, date, name, amount, category, trans_type, account_id, subcategory))
         
-        cursor.execute("SELECT type FROM accounts WHERE id = ?", (account_id,))
-        res = cursor.fetchone()
-        acc_type = res[0] if res else "Debit"
-
-        if acc_type == 'Credit':
-            if trans_type == 'Expense':
-                cursor.execute("UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?", (amount, account_id))
-            else:
-                cursor.execute("UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?", (amount, account_id))
-        else:
-            if trans_type == 'Expense':
-                cursor.execute("UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?", (amount, account_id))
-            else:
-                cursor.execute("UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?", (amount, account_id))
+        # Ajuste de saldo (validando que la cuenta sea del usuario)
+        _adjust_account_balance(cursor, account_id, amount, trans_type, is_reversal=False, user_id=uid)
         
         conn.commit()
         return True, "Registrado."
@@ -511,11 +430,20 @@ def add_transaction(date, name, amount, category, trans_type, account_id):
 
 def get_transactions_df():
     conn = get_connection()
+    uid = get_uid()
     try:
-        df = pd.read_sql_query("SELECT t.*, a.name as account_name FROM transactions t LEFT JOIN accounts a ON t.account_id = a.id ORDER BY t.date DESC", conn)
+        # Solo transacciones del usuario
+        df = pd.read_sql_query("""
+            SELECT t.*, a.name as account_name 
+            FROM transactions t 
+            LEFT JOIN accounts a ON t.account_id = a.id 
+            WHERE t.user_id = ? 
+            ORDER BY t.date DESC
+        """, conn, params=(uid,))
     except: df = pd.DataFrame()
     conn.close()
     return df
+
 
 def get_net_worth():
     conn = get_connection()
@@ -555,59 +483,49 @@ def get_net_worth():
         conn.close()
 
 def get_monthly_summary():
-    df = get_transactions_df()
+    """Flujo de caja mensual del usuario."""
+    df = get_transactions_df() # Esta función ya filtra por usuario internamente
     if df.empty: return pd.DataFrame()
     df['date'] = pd.to_datetime(df['date'])
     df['Month'] = df['date'].dt.strftime('%Y-%m')
     return df.groupby(['Month', 'type'])['amount'].sum().reset_index()
 
+
 def get_category_summary():
+    """Gastos por categoría del usuario."""
     df = get_transactions_df()
     if df.empty: return pd.DataFrame()
     return df[df['type'] == 'Expense'].groupby('category')['amount'].sum().reset_index()
 
+
 def add_iou(name, amount, iou_type, due_date, person_name=None, description=None):
     conn = get_connection()
-    cursor = conn.cursor()
-    date_created = date.today().strftime('%Y-%m-%d')
-    
-    # current_amount inicialmente es igual a amount
+    uid = get_uid()
     try:
-        cursor.execute("""
-            INSERT INTO iou (name, amount, type, current_amount, date_created, due_date, person_name, description)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (name, amount, iou_type, amount, date_created, due_date, person_name, description)) # AÑADIR person_name, description
+        conn.execute("""
+            INSERT INTO iou (user_id, name, amount, type, current_amount, date_created, due_date, person_name, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (uid, name, amount, iou_type, amount, date.today().strftime('%Y-%m-%d'), due_date, person_name, description))
         conn.commit()
-        return True, "Deuda/Cobro registrado."
-    except Exception as e:
-        return False, f"Error al registrar: {str(e)}"
-    finally:
-        conn.close()
-
+        return True, "Registrado."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
 
 # backend/data_manager.py
 
 def get_iou_df():
     conn = get_connection()
+    uid = get_uid()
     try:
-        # 🚨 CAMBIO: Ordenamos por 'type ASC' para que los 'Payable' (Yo debo) 
-        # salgan primero en la tabla y puedas ver ese registro de $31 perdido.
         df = pd.read_sql_query("""
             SELECT * FROM iou 
-            WHERE status = 'Pending' AND current_amount > 0 
+            WHERE user_id = ? AND status = 'Pending' AND current_amount > 0 
             ORDER BY type ASC, date_created DESC
-        """, conn)
-        
-        # (Opcional) Si quieres asegurar el orden visual en Python también:
-        # df.sort_values(by=['type', 'date_created'], ascending=[True, False], inplace=True)
-        
-        df['type_display'] = df['type'].apply(lambda x: "Por Cobrar (Activo)" if x == 'Receivable' else "Por Pagar (Pasivo)")
-    except Exception as e: 
-        print(f"Error fetching iou df: {e}")
-        df = pd.DataFrame()
-    finally:
-        conn.close()
-    return df
+        """, conn, params=(uid,))
+        df['type_display'] = df['type'].apply(lambda x: "Por Cobrar" if x == 'Receivable' else "Por Pagar")
+        return df
+    finally: conn.close()
+
 
 def delete_iou(iou_id):
     conn = get_connection()
@@ -661,149 +579,121 @@ def update_iou(iou_id, name, new_original_amount, iou_type, due_date, person_nam
 # data_manager.py
 
 def get_account_name_summary():
-    """Calcula el saldo total agrupado por el NOMBRE que el usuario asignó a la cuenta (Ej. 'Ahorro', 'Billetera')."""
+    """Saldo por nombre de cuenta del usuario."""
     conn = get_connection()
+    uid = get_uid()
     try:
-        query = """
+        df = pd.read_sql_query("""
             SELECT name, SUM(current_balance) as total_balance
             FROM accounts
-            WHERE type IN ('Debit', 'Cash')
+            WHERE type IN ('Debit', 'Cash') AND user_id = ?
             GROUP BY name
             HAVING total_balance > 0
-        """
-        df = pd.read_sql_query(query, conn)
+        """, conn, params=(uid,))
         return df
-    except Exception as e:
-        print(f"Error getting account name summary: {e}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
+    finally: conn.close()
+
+
 
 # data_manager.py - Colocar junto a add_transaction y get_transactions_df
 
 def get_transaction_by_id(trans_id):
     conn = get_connection()
+    uid = get_uid()
     try:
         df = pd.read_sql_query("""
-            SELECT t.*, a.name as account_name FROM transactions t 
-            LEFT JOIN accounts a ON t.account_id = a.id 
-            WHERE t.id = ?
-        """, conn, params=(trans_id,))
-        if not df.empty:
-            return df.iloc[0].to_dict()
+            SELECT * FROM transactions WHERE id = ? AND user_id = ?
+        """, conn, params=(trans_id, uid))
+        if not df.empty: return df.iloc[0].to_dict()
         return None
-    except:
-        return None
-    finally:
-        conn.close()
+    finally: conn.close()
+
+
 
 # backend/data_manager.py
 
-def _adjust_account_balance(cursor, account_id, amount, trans_type, is_reversal=False):
-    """
-    Helper para sumar o restar un monto del balance de una cuenta O de la Reserva.
-    Maneja account_id='RESERVE' para la tabla abono_reserve.
-    """
-    
-    # --- CASO ESPECIAL: RESERVA DE ABONO ---
+def _adjust_account_balance(cursor, account_id, amount, trans_type, is_reversal=False, user_id=None):
+    if user_id is None: return 
+
+    # Caso Reserva
     if account_id == 'RESERVE':
-        # Obtener saldo actual
-        cursor.execute("SELECT balance FROM abono_reserve WHERE id = 1")
+        cursor.execute("SELECT balance FROM abono_reserve WHERE user_id = ?", (user_id,))
         res = cursor.fetchone()
-        current_bal = res[0] if res else 0.0
+        if not res: 
+            cursor.execute("INSERT INTO abono_reserve (user_id, balance) VALUES (?, 0.0)", (user_id,))
+            current = 0.0
+        else: current = res[0]
         
-        multiplier = -1 if is_reversal else 1
-        
-        # Lógica de Reserva (Funciona como una cuenta de Débito/Efectivo):
-        # Income (Cobro) -> Aumenta la reserva
-        # Expense (Pago) -> Disminuye la reserva
-        if trans_type == 'Expense':
-            change = amount * multiplier * -1
-        else: # Income
-            change = amount * multiplier
-            
-        new_bal = current_bal + change
-        
-        # Asegurar que la tabla existe (por seguridad)
-        cursor.execute("INSERT OR IGNORE INTO abono_reserve (id, balance) VALUES (1, 0.0)")
-        cursor.execute("UPDATE abono_reserve SET balance = ? WHERE id = 1", (new_bal,))
+        mult = -1 if is_reversal else 1
+        change = (amount * mult) if trans_type == 'Income' else (amount * mult * -1)
+        cursor.execute("UPDATE abono_reserve SET balance = ? WHERE user_id = ?", (current + change, user_id))
         return
 
-    # --- CASO NORMAL: CUENTAS BANCARIAS ---
-    # (Lógica original para cuentas normales)
-    try:
-        cursor.execute("SELECT type FROM accounts WHERE id = ?", (account_id,))
-        res = cursor.fetchone()
-        if not res: return # Cuenta no existe
+    # Caso Cuenta Normal
+    cursor.execute("SELECT type, current_balance FROM accounts WHERE id = ? AND user_id = ?", (account_id, user_id))
+    res = cursor.fetchone()
+    if not res: return
+    
+    acc_type, current = res
+    mult = -1 if is_reversal else 1
+    
+    if acc_type == 'Credit':
+        # Gasto SUMA deuda, Ingreso RESTA
+        change = (amount * mult) if trans_type == 'Expense' else (amount * mult * -1)
+    else:
+        # Gasto RESTA saldo, Ingreso SUMA
+        change = (amount * mult * -1) if trans_type == 'Expense' else (amount * mult)
         
-        acc_type = res[0]
-        multiplier = -1 if is_reversal else 1
-        
-        if acc_type == 'Credit':
-            # En Crédito: Gasto SUMA deuda. Ingreso RESTA deuda.
-            if trans_type == 'Expense':
-                new_amount = amount * multiplier
-            else: # Income
-                new_amount = amount * multiplier * -1 
-        else: # Debit/Cash
-            # En Débito: Gasto RESTA balance. Ingreso SUMA balance.
-            if trans_type == 'Expense':
-                new_amount = amount * multiplier * -1
-            else: # Income
-                new_amount = amount * multiplier
-        
-        cursor.execute("UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?", (new_amount, account_id))
-    except Exception as e:
-        print(f"Error ajustando balance cuenta {account_id}: {e}")
+    cursor.execute("UPDATE accounts SET current_balance = current_balance + ? WHERE id = ? AND user_id = ?", (change, account_id, user_id))
+
+
 
 def delete_transaction(trans_id):
     conn = get_connection()
     cursor = conn.cursor()
+    uid = get_uid()
     try:
-        trans = get_transaction_by_id(trans_id)
-        if not trans: return False, "Transacción no encontrada."
+        trans = get_transaction_by_id(trans_id) # Esta función ya filtra por usuario internamente
+        if not trans: return False, "No encontrado."
         
-        # 1. Reversar el balance en la cuenta original
-        _adjust_account_balance(cursor, trans['account_id'], trans['amount'], trans['type'], is_reversal=True)
+        _adjust_account_balance(cursor, trans['account_id'], trans['amount'], trans['type'], is_reversal=True, user_id=uid)
         
-        # 2. Eliminar la transacción
-        cursor.execute("DELETE FROM transactions WHERE id = ?", (trans_id,))
+        cursor.execute("DELETE FROM transactions WHERE id = ? AND user_id = ?", (trans_id, uid))
         conn.commit()
-        return True, "Transacción eliminada y balance corregido."
+        return True, "Eliminado."
     except Exception as e:
         conn.rollback()
-        return False, f"Error al eliminar: {str(e)}"
-    finally:
-        conn.close()
+        return False, str(e)
+    finally: conn.close()
 
-def update_transaction(trans_id, new_date, new_name, new_amount, new_category, new_type, new_account_id):
+
+
+def update_transaction(trans_id, new_date, new_name, new_amount, new_category, new_type, new_account_id, new_subcategory=None):
     conn = get_connection()
     cursor = conn.cursor()
-    
+    uid = get_uid()
     try:
+        # Verificar propiedad
         old_trans = get_transaction_by_id(trans_id)
-        if not old_trans: return False, "Transacción original no encontrada."
+        if not old_trans: return False, "No encontrado."
 
-        # 1. REVERSAR balance en la cuenta ORIGINAL
-        _adjust_account_balance(cursor, old_trans['account_id'], old_trans['amount'], old_trans['type'], is_reversal=True)
+        _adjust_account_balance(cursor, old_trans['account_id'], old_trans['amount'], old_trans['type'], is_reversal=True, user_id=uid)
         
-        # 2. ACTUALIZAR el registro de la transacción
         cursor.execute("""
             UPDATE transactions 
-            SET date = ?, name = ?, amount = ?, category = ?, type = ?, account_id = ?
-            WHERE id = ?
-        """, (new_date, new_name, new_amount, new_category, new_type, new_account_id, trans_id))
+            SET date = ?, name = ?, amount = ?, category = ?, type = ?, account_id = ?, subcategory = ?
+            WHERE id = ? AND user_id = ?
+        """, (new_date, new_name, new_amount, new_category, new_type, new_account_id, new_subcategory, trans_id, uid))
 
-        # 3. APLICAR NUEVO BALANCE a la nueva cuenta/monto
-        _adjust_account_balance(cursor, new_account_id, new_amount, new_type, is_reversal=False)
-        
+        _adjust_account_balance(cursor, new_account_id, new_amount, new_type, is_reversal=False, user_id=uid)
         conn.commit()
-        return True, "Transacción actualizada y balance corregido."
+        return True, "Actualizado."
     except Exception as e:
         conn.rollback()
-        return False, f"Error al actualizar: {str(e)}"
-    finally:
-        conn.close()
+        return False, str(e)
+    finally: conn.close()
+
+
 
 # data_manager.py
 
@@ -826,19 +716,17 @@ def get_abono_balance():
 
 # ... (Al final del archivo) ...
 
+
 def get_credit_abono_reserve():
-    """Obtiene el saldo de la reserva de abono para tarjetas de crédito (fuera de Patrimonio Neto)."""
     conn = get_connection()
+    uid = get_uid()
     try:
-        # Intenta leer la reserva. Si la tabla no existe, falla y retorna 0.0
-        df = pd.read_sql_query("SELECT balance FROM abono_reserve WHERE id = 1", conn)
-        return df['balance'].iloc[0] if not df.empty else 0.0
-    except Exception:
-        # En caso de error (probablemente la tabla no existe), inicializamos
-        setup_abono_reserve() 
-        return 0.0
-    finally:
-        conn.close()
+        cur = conn.cursor()
+        cur.execute("SELECT balance FROM abono_reserve WHERE user_id = ?", (uid,))
+        res = cur.fetchone()
+        return res[0] if res else 0.0
+    finally: conn.close()
+
 
 def update_credit_abono_reserve(amount):
     """Actualiza (reemplaza) el saldo de la reserva de abono."""
@@ -912,46 +800,33 @@ def get_informal_summary():
         conn.close()
 
 def get_full_debt_summary():
-    """
-    Calcula y retorna un diccionario con el resumen consolidado
-    de Deudas y Cobros Informales (IOU) y Deuda Exigible de Tarjetas.
-    """
-    # 1. Obtener el resumen de IOU (Asume que esta función ya existe y funciona)
-    # Retorna: (lo_que_yo_debo_informalmente, lo_que_me_deben_informalmente)
-    try:
-        informal_debt, informal_collectible = get_informal_summary()
-    except Exception as e:
-        print(f"Error al obtener resumen informal: {e}")
-        informal_debt, informal_collectible = 0.0, 0.0
-
-    # 2. Obtener la deuda de Tarjeta de Crédito Exigible
-    # Ya incluye la reserva de abono (es la deuda neta exigible)
-    try:
-        credit_exigible_net = get_net_exigible_credit_debt()
-    except Exception as e:
-        print(f"Error al obtener deuda crédito exigible: {e}")
-        credit_exigible_net = 0.0
-
-    # 3. CÁLCULOS CONSOLIDADOS (La lógica centralizada)
+    """Resumen consolidado de deuda del usuario."""
+    uid = get_uid()
+    # Reutilizamos las funciones que ya filtran
+    df_iou = get_iou_df()
     
-    # Deuda total que tengo (IOU Payable + Tarjeta Neta Exigible)
-    total_gross_debt = informal_debt + credit_exigible_net
+    payables = df_iou[df_iou['type'] == 'Payable']['current_amount'].sum()
+    receivables = df_iou[df_iou['type'] == 'Receivable']['current_amount'].sum()
     
-    # Exposición real: Deuda Total - Cobros que me deben (IOU Receivable)
-    net_exposure = total_gross_debt - informal_collectible
+    # Exigible TC
+    cred_sum = get_credit_summary_data()
+    reserve = get_credit_abono_reserve()
     
-    # Saldo neto solo de IOU: Cobros - Deudas informales
-    informal_net_balance = informal_collectible - informal_debt
+    exigible_gross = cred_sum['total_debt'] - cred_sum['total_installments']
+    credit_exigible_net = max(0, exigible_gross - reserve)
+    
+    total_gross_debt = payables + credit_exigible_net
+    net_exposure = total_gross_debt - receivables
+    informal_net_balance = receivables - payables
 
     return {
-        'informal_debt': informal_debt,
-        'informal_collectible': informal_collectible,
+        'informal_debt': abs(payables),
+        'informal_collectible': abs(receivables),
         'credit_exigible_net': credit_exigible_net,
         'total_gross_debt': total_gross_debt,
         'net_exposure': net_exposure,
         'informal_net_balance': informal_net_balance
     }
-
 def get_net_exigible_credit_debt():
     """Calcula el monto exigible neto (sin cuotas y restando la reserva de abono)."""
     # Se asume que get_credit_summary_data() y get_credit_abono_reserve() ya existen
@@ -1048,138 +923,162 @@ def clean_ticker_display(raw_ticker):
     return clean
 
 def get_stocks_data(force_refresh=False):
-    create_market_cache_table()
+    """
+    Obtiene el portafolio del usuario actual combinando:
+    1. Datos privados (investments: shares, avg_price) -> Filtrado por user_id
+    2. Datos globales (market_cache: price, news) -> Sin filtrar (compartido)
+    """
     conn = get_connection()
+    uid = get_uid() # ID del usuario actual
     
     try:
-        df_investments = pd.read_sql_query("SELECT * FROM investments", conn)
-    except:
-        conn.close(); return []
+        # 1. Obtener los tickers que posee ESTE usuario
+        df_investments = pd.read_sql_query("SELECT ticker FROM investments WHERE user_id = ?", conn, params=(uid,))
+        
+        if df_investments.empty:
+            return []
 
-    if df_investments.empty:
-        conn.close(); return []
-
-    my_tickers = df_investments['ticker'].unique().tolist()
-    
-    # 2. DETERMINAR SI ACTUALIZAR (Usamos 'beta' como testigo de que tenemos data financiera)
-    tickers_to_fetch = my_tickers if force_refresh else []
-    if not force_refresh:
-        placeholders = ','.join(['?']*len(my_tickers))
-        try:
-            # Verificamos si tenemos datos críticos (ej: beta o pe_ratio)
-            query_check = f"SELECT ticker, beta FROM market_cache WHERE ticker IN ({placeholders})"
-            cached = pd.read_sql_query(query_check, conn, params=my_tickers)
-            # Si beta es nulo o 0, asumimos que falta info financiera y recargamos
-            valid_cached = cached[cached['beta'].notnull()]['ticker'].tolist()
-            tickers_to_fetch = [t for t in my_tickers if t not in valid_cached]
-        except: 
+        my_tickers = df_investments['ticker'].unique().tolist()
+        
+        # 2. Lógica de Actualización de Caché (GLOBAL)
+        # Verificamos si tenemos datos en market_cache, independientemente de quién los pidió antes
+        tickers_to_fetch = []
+        
+        if force_refresh:
             tickers_to_fetch = my_tickers
+        else:
+            # Consultamos qué tickers ya tienen datos válidos (usamos 'beta' como testigo)
+            if my_tickers:
+                placeholders = ','.join(['?'] * len(my_tickers))
+                query_check = f"SELECT ticker, beta FROM market_cache WHERE ticker IN ({placeholders})"
+                try:
+                    cached = pd.read_sql_query(query_check, conn, params=my_tickers)
+                    # Si beta es nulo, asumimos que falta info financiera y recargamos
+                    valid_cached = cached[cached['beta'].notnull()]['ticker'].tolist()
+                    tickers_to_fetch = [t for t in my_tickers if t not in valid_cached]
+                except:
+                    tickers_to_fetch = my_tickers
 
-    # 3. CONSULTAR API
-    if tickers_to_fetch and finnhub_client:
-        print(f"🔄 Finnhub Updating (Lite): {tickers_to_fetch}")
-        cursor = conn.cursor()
+        # 3. Consultar API Finnhub (Solo para lo que falta o si se forzó)
+        if tickers_to_fetch and finnhub_client:
+            print(f"🔄 Finnhub Updating: {tickers_to_fetch}")
+            cursor = conn.cursor()
+            
+            for t in tickers_to_fetch:
+                try:
+                    # A. Precio en vivo
+                    q = finnhub_client.quote(t)
+                    if q['c'] == 0: continue 
+                    
+                    # B. Perfil de empresa
+                    try: p = finnhub_client.company_profile2(symbol=t)
+                    except: p = {}
+                    real_name = p.get('name', t)
+                    
+                    # C. Métricas financieras
+                    try: 
+                        metrics_res = finnhub_client.company_basic_financials(t, 'all')
+                        m = metrics_res.get('metric', {})
+                    except: m = {}
+
+                    # D. Noticias
+                    try: 
+                        _today = datetime.now().strftime('%Y-%m-%d')
+                        news = finnhub_client.company_news(t, _from=_today, to=_today)[:3]
+                    except: news = []
+
+                    # INSERT OR REPLACE en la tabla GLOBAL (market_cache)
+                    # No usamos user_id aquí porque el precio de Apple es igual para todos
+                    cursor.execute("""
+                    INSERT OR REPLACE INTO market_cache (
+                        ticker, company_name, price, day_change, day_change_pct, day_high, day_low, 
+                        fiftyTwo_high, fiftyTwo_low, 
+                        market_cap, pe_ratio, dividend_yield, beta,
+                        sector, country, summary, news, sentiment, last_updated
+                    ) 
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now','localtime'))
+                    """, (
+                        t, real_name,
+                        q.get('c', 0), q.get('d', 0), q.get('dp', 0), q.get('h', 0), q.get('l', 0),
+                        m.get('52WeekHigh', 0), m.get('52WeekLow', 0), 
+                        p.get('marketCapitalization', 0), 
+                        m.get('pfcfShareTTM', 0) if m.get('peBasicExclExtraTTM') is None else m.get('peBasicExclExtraTTM', 0),
+                        m.get('dividendYieldIndicatedAnnual', 0), m.get('beta', 0),
+                        p.get('finnhubIndustry', 'N/A'), p.get('country', 'N/A'), p.get('currency', 'USD'), 
+                        json.dumps(news), json.dumps({})
+                    ))
+                    conn.commit()
+                    time.sleep(0.2) # Pequeña pausa para no saturar API
+                except Exception as e: 
+                    print(f"❌ Error API {t}: {e}")
+
+        # 4. LEER DATOS COMBINADOS (User + Global)
+        # Unimos las inversiones DEL USUARIO con el caché GLOBAL
+        query = """
+        SELECT i.*, 
+               c.company_name, 
+               c.price as current_price, c.day_change, c.day_change_pct, c.sector, 
+               c.market_cap, c.day_high, c.day_low, c.news,
+               c.fiftyTwo_high, c.fiftyTwo_low, 
+               c.pe_ratio, c.dividend_yield, c.beta, c.country
+        FROM investments i 
+        LEFT JOIN market_cache c ON i.ticker = c.ticker
+        WHERE i.user_id = ?
+        """
+        df = pd.read_sql_query(query, conn, params=(uid,))
         
-        for t in tickers_to_fetch:
-            try:
-                q = finnhub_client.quote(t)
-                if q['c'] == 0: continue 
+        results = []
+        for _, row in df.iterrows():
+            # Cálculos de valor
+            curr = row['current_price'] if pd.notnull(row['current_price']) and row['current_price'] > 0 else row['avg_price']
+            mkt_val = row['shares'] * curr
+            gain = mkt_val - (row['shares'] * row['avg_price'])
+            
+            # Limpieza de textos
+            ticker_clean = clean_ticker_display(row['ticker'])
+            real_name_db = row['company_name'] if pd.notnull(row['company_name']) else ticker_clean
+            
+            try: news_data = json.loads(row['news']) if row['news'] else []
+            except: news_data = []
+
+            results.append({
+                'id': row['id'],
+                'ticker': row['ticker'],            # Raw: BINANCE:BTCUSDT
+                'display_ticker': ticker_clean,     # Clean: BTC
+                'real_name': real_name_db,          # Name: Bitcoin
+                'name': real_name_db,
+                'asset_type': row['asset_type'],
+                'shares': row['shares'],
+                'avg_price': row['avg_price'],
+                'current_price': curr,
+                'market_value': mkt_val,
+                'total_gain': gain,
+                'total_gain_pct': (gain / (row['shares']*row['avg_price']) * 100) if row['avg_price'] > 0 else 0,
                 
-                try: p = finnhub_client.company_profile2(symbol=t)
-                except: p = {}
-
-                # Extraer nombre real (Ej: 'Alphabet Inc' o 'Bitcoin')
-                real_name = p.get('name', t)
-                
-                try: 
-                    # Seguimos necesitando 'metrics' para Beta, Div Yield y 52Weeks
-                    metrics_res = finnhub_client.company_basic_financials(t, 'all')
-                    m = metrics_res.get('metric', {})
-                except: m = {}
-
-                try: 
-                    _today = datetime.now().strftime('%Y-%m-%d')
-                    news = finnhub_client.company_news(t, _from=_today, to=_today)[:3]
-                except: news = []
-
-                # INSERT SOLO CON LO NECESARIO
-                cursor.execute("""
-                INSERT OR REPLACE INTO market_cache (
-                    ticker, company_name, price, day_change, day_change_pct, day_high, day_low, 
-                    fiftyTwo_high, fiftyTwo_low, 
-                    market_cap, pe_ratio, dividend_yield, beta,
-                    sector, country, summary, news, sentiment, last_updated
-                ) 
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now','localtime'))
-                """, (
-                    t, real_name, # <--- Insertamos el nombre real
-                    q.get('c', 0), q.get('d', 0), q.get('dp', 0), q.get('h', 0), q.get('l', 0),
-                    m.get('52WeekHigh', 0), m.get('52WeekLow', 0), 
-                    p.get('marketCapitalization', 0), 
-                    m.get('pfcfShareTTM', 0) if m.get('peBasicExclExtraTTM') is None else m.get('peBasicExclExtraTTM', 0),
-                    m.get('dividendYieldIndicatedAnnual', 0), m.get('beta', 0),
-                    p.get('finnhubIndustry', 'N/A'), p.get('country', 'N/A'), p.get('currency', 'USD'), 
-                    json.dumps(news), json.dumps({})
-                ))
-                conn.commit()
-                time.sleep(0.3) 
-            except Exception as e: print(f"❌ Error {t}: {e}")
-
-    # 4. LEER DATOS (Query optimizada sin PEG ni Shares)
-    query = """
-    SELECT i.*, 
-           c.company_name, -- <--- Seleccionamos el nombre real
-           c.price as current_price, c.day_change, c.day_change_pct, c.sector, 
-           c.market_cap, c.day_high, c.day_low, c.news,
-           c.fiftyTwo_high, c.fiftyTwo_low, 
-           c.pe_ratio, c.dividend_yield, c.beta, c.country
-    FROM investments i 
-    LEFT JOIN market_cache c ON i.ticker = c.ticker
-    """
-    df = pd.read_sql_query(query, conn)
-    conn.close()
-    
-    results = []
-    for _, row in df.iterrows():
-        curr = row['current_price'] if pd.notnull(row['current_price']) and row['current_price'] > 0 else row['avg_price']
-        mkt_val = row['shares'] * curr
-        gain = mkt_val - (row['shares'] * row['avg_price'])
-        ticker_clean = clean_ticker_display(row['ticker'])
-        real_name_db = row['company_name'] if pd.notnull(row['company_name']) else ticker_clean
-       
-        try: news_data = json.loads(row['news']) if row['news'] else []
-        except: news_data = []
-
-        results.append({
-            'id': row['id'],
-            'ticker': row['ticker'],            # BINANCE:BTCUSDT
-            'display_ticker': ticker_clean,     # BTC
-            'real_name': real_name_db,          # Bitcoin / Alphabet Inc
-            'name': real_name_db,
-            'asset_type': row['asset_type'],
-            'shares': row['shares'],
-            'avg_price': row['avg_price'],
-            'current_price': curr,
-            'market_value': mkt_val,
-            'total_gain': gain,
-            'total_gain_pct': (gain / (row['shares']*row['avg_price']) * 100) if row['avg_price'] > 0 else 0,
+                # Datos de Mercado (Globales)
+                'day_change': row['day_change'] or 0, 
+                'day_change_pct': row['day_change_pct'] or 0,
+                'day_high': row['day_high'] or 0, 'day_low': row['day_low'] or 0,
+                'fiftyTwo_high': row['fiftyTwo_high'] or 0, 'fiftyTwo_low': row['fiftyTwo_low'] or 0,
+                'pe_ratio': row['pe_ratio'] or 0, 
+                'market_cap': row['market_cap'] or 0,
+                'dividend_yield': row['dividend_yield'] or 0, 
+                'beta': row['beta'] or 0, 
+                'sector': row['sector'] or 'N/A', 
+                'country': row['country'] or 'N/A', 
+                'summary': '', 
+                'news': news_data, 
+                'sentiment': {}
+            })
             
-            # Datos de Mercado
-            'day_change': row['day_change'] or 0, 'day_change_pct': row['day_change_pct'] or 0,
-            'day_high': row['day_high'] or 0, 'day_low': row['day_low'] or 0,
-            'fiftyTwo_high': row['fiftyTwo_high'] or 0, 'fiftyTwo_low': row['fiftyTwo_low'] or 0,
-            
-            # Métricas Financieras (Solo las 4 necesarias)
-            'pe_ratio': row['pe_ratio'] or 0, 
-            'market_cap': row['market_cap'] or 0,
-            'dividend_yield': row['dividend_yield'] or 0, 
-            'beta': row['beta'] or 0, 
-            
-            'sector': row['sector'] or 'N/A', 'country': row['country'] or 'N/A', 
-            'summary': '', 'news': news_data, 'sentiment': {}
-        })
+        return results
         
-    return results
+    except Exception as e:
+        print(f"Error en get_stocks_data: {e}")
+        return []
+    finally:
+        conn.close()
+
 
 def get_data_timestamp():
     """Devuelve la fecha más reciente de actualización."""
@@ -1205,104 +1104,62 @@ def get_data_timestamp():
 # backend/data_manager.py
 
 def get_net_worth_breakdown(force_refresh=False):
-    """
-    Obtiene un desglose detallado del Patrimonio Neto:
-    - Activos: Cuentas + Cobros (IOU) + Reserva Abono + INVERSIONES
-    - Pasivos: Deuda Tarjetas + Deudas Informales (IOU)
-    Acepta force_refresh para actualizar precios de inversiones en vivo.
-    """
     conn = get_connection()
-    details = {
-        'net_worth': 0.0,
-        'assets': {'total': 0.0, 'liquid': 0.0, 'receivables': 0.0, 'investments': 0.0},
-        'liabilities': {'total': 0.0, 'credit_cards': 0.0, 'payables': 0.0}
-    }
+    uid = get_uid()
+    details = {'net_worth': 0.0, 'assets': {'total': 0.0}, 'liabilities': {'total': 0.0}}
     try:
-        # 1. Cuentas Bancarias y Crédito
-        df_acc = pd.read_sql_query("SELECT type, current_balance FROM accounts", conn)
+        # Cuentas
+        df_acc = pd.read_sql_query("SELECT type, current_balance FROM accounts WHERE user_id = ?", conn, params=(uid,))
+        liquid = df_acc[df_acc['type'].isin(['Debit', 'Cash'])]['current_balance'].sum()
+        credit = df_acc[df_acc['type'] == 'Credit']['current_balance'].sum()
         
-        # Activos Bancarios Normales
-        liquid_bank = df_acc[df_acc['type'].isin(['Debit', 'Cash'])]['current_balance'].sum()
+        # Reserva
+        res = get_credit_abono_reserve()
         
-        # Reserva de Abono
-        try: reserve_bal = get_credit_abono_reserve()
-        except: reserve_bal = 0.0
-
-        # 2. INVERSIONES (Valor de Mercado)
-        investments_value = 0.0
-        try:
-            # CORRECCIÓN 2: Pasamos el flag force_refresh a get_stocks_data
-            stocks_list = get_stocks_data(force_refresh=force_refresh) 
-            if stocks_list:
-                investments_value = sum(item['market_value'] for item in stocks_list)
-        except Exception as e:
-            print(f"Error calculating investments for Net Worth: {e}")
-            investments_value = 0.0
-
-        # Total Líquido = Bancos + Reserva
-        liquid_total = liquid_bank + reserve_bal
-
-        # Pasivos Bancarios (Tarjetas)
-        credit_debt = df_acc[df_acc['type'] == 'Credit']['current_balance'].sum()
-
-        # 3. Deudas y Cobros Informales (IOU)
-        df_iou = pd.read_sql_query("SELECT type, current_amount FROM iou WHERE status = 'Pending'", conn)
+        # IOU
+        df_iou = pd.read_sql_query("SELECT type, current_amount FROM iou WHERE user_id = ? AND status='Pending'", conn, params=(uid,))
+        iou_rec = df_iou[df_iou['type'] == 'Receivable']['current_amount'].sum() if not df_iou.empty else 0
+        iou_pay = df_iou[df_iou['type'] == 'Payable']['current_amount'].sum() if not df_iou.empty else 0
         
-        receivables = 0.0
-        payables = 0.0
+        # Inversiones
+        stocks = get_stocks_data(force_refresh)
+        inv_val = sum(s['market_value'] for s in stocks)
         
-        if not df_iou.empty:
-            receivables = df_iou[df_iou['type'] == 'Receivable']['current_amount'].sum()
-            payables = df_iou[df_iou['type'] == 'Payable']['current_amount'].sum()
-
-        # 4. CONSOLIDACIÓN FINAL
-        total_assets = liquid_total + receivables + investments_value
-        total_liabilities = credit_debt + payables
+        assets = liquid + res + iou_rec + inv_val
+        liabs = credit + iou_pay
         
-        details['net_worth'] = total_assets - total_liabilities
-        
-        details['assets']['total'] = total_assets
-        details['assets']['liquid'] = liquid_total
-        details['assets']['receivables'] = receivables
-        details['assets']['investments'] = investments_value
-        
-        details['liabilities']['total'] = total_liabilities
-        details['liabilities']['credit_cards'] = credit_debt
-        details['liabilities']['payables'] = payables
-        
-    except Exception as e:
-        print(f"Error calculating net worth breakdown: {e}")
-    finally:
-        conn.close()
+        details['net_worth'] = assets - liabs
+        details['assets'] = {'total': assets, 'liquid': liquid + res, 'receivables': iou_rec, 'investments': inv_val}
+        details['liabilities'] = {'total': liabs, 'credit_cards': credit, 'payables': iou_pay}
+    finally: conn.close()
     return details
+
 
 
 
 # data_manager.py
 
 # --- SUBCATEGORÍAS ---
-def add_custom_subcategory(name, parent_category):
+def add_custom_subcategory(name, parent):
     conn = get_connection()
-    cursor = conn.cursor()
+    uid = get_uid()
     try:
-        cursor.execute("INSERT INTO subcategories (name, parent_category) VALUES (?, ?)", (name, parent_category))
+        conn.execute("INSERT INTO subcategories (user_id, name, parent_category) VALUES (?, ?, ?)", (uid, name, parent))
         conn.commit()
-        return True, "Subcategoría creada."
-    except Exception as e:
-        return False, str(e)
-    finally:
-        conn.close()
+        return True, "Creada."
+    except: return False, "Error."
+    finally: conn.close()
 
-def get_subcategories_by_parent(parent_category):
+
+
+def get_subcategories_by_parent(parent):
     conn = get_connection()
+    uid = get_uid()
     try:
-        # Retorna lista de diccionarios [{'label': 'Netflix', 'value': 'Netflix'}, ...]
-        df = pd.read_sql_query("SELECT name FROM subcategories WHERE parent_category = ?", conn, params=(parent_category,))
-        return [{'label': row['name'], 'value': row['name']} for _, row in df.iterrows()]
-    except:
-        return []
-    finally:
-        conn.close()
+        df = pd.read_sql_query("SELECT name FROM subcategories WHERE user_id = ? AND parent_category = ?", conn, params=(uid, parent))
+        return [{'label': r['name'], 'value': r['name']} for _, r in df.iterrows()]
+    except: return []
+    finally: conn.close()
 
 # --- MODIFICAR ESTAS FUNCIONES EXISTENTES PARA INCLUIR 'subcategory' ---
 
@@ -1355,117 +1212,79 @@ def update_transaction(trans_id, new_date, new_name, new_amount, new_category, n
 # data_manager.py (Añadir estas funciones)
 
 def get_all_categories_options():
-    """Retorna las categorías principales para el dropdown."""
     conn = get_connection()
+    uid = get_uid()
     try:
-        df = pd.read_sql_query("SELECT name FROM categories ORDER BY name ASC", conn)
-        return [{'label': row['name'], 'value': row['name']} for _, row in df.iterrows()]
+        df = pd.read_sql_query("SELECT name FROM categories WHERE user_id = ? ORDER BY name ASC", conn, params=(uid,))
+        return [{'label': r['name'], 'value': r['name']} for _, r in df.iterrows()]
     except: return []
     finally: conn.close()
 
+
+
 def add_custom_category(name):
-    """Crea una nueva categoría principal."""
     conn = get_connection()
-    cursor = conn.cursor()
+    uid = get_uid()
     try:
-        cursor.execute("INSERT INTO categories (name) VALUES (?)", (name,))
+        conn.execute("INSERT INTO categories (user_id, name) VALUES (?, ?)", (uid, name))
         conn.commit()
-        return True, f"Categoría '{name}' creada."
-    except Exception as e: return False, str(e)
+        return True, "Creada."
+    except: return False, "Error."
     finally: conn.close()
-
-
 # backend/data_manager.p
 
 # ... (otras funciones) ...
 
 def get_historical_networth_trend(start_date=None, end_date=None):
-    """
-    Calcula el historial de Patrimonio Neto diario.
-    Si no se dan fechas, calcula TODA la historia disponible.
-    """
+    """Historial de patrimonio filtrado por usuario."""
     conn = get_connection()
+    uid = get_uid()
     try:
-        # 1. Obtener Patrimonio Neto ACTUAL (HOY)
+        # Patrimonio actual del usuario
         current_nw = get_net_worth_breakdown()['net_worth']
         today = date.today()
         
-        # 2. Obtener Transacciones
-        df_trans = pd.read_sql_query("SELECT date, amount, type FROM transactions", conn)
-        if df_trans.empty:
-            return pd.DataFrame()
+        # Transacciones del usuario
+        df_trans = pd.read_sql_query("SELECT date, amount, type FROM transactions WHERE user_id = ?", conn, params=(uid,))
+        
+        if df_trans.empty: return pd.DataFrame()
             
         df_trans['date'] = pd.to_datetime(df_trans['date']).dt.date
-        
-        # 3. Preparar Rango de Fechas
-        # Si no hay start_date, usamos la primera transacción
         min_db_date = df_trans['date'].min()
         
         req_start = date.fromisoformat(start_date) if start_date else min_db_date
         req_end = date.fromisoformat(end_date) if end_date else today
         
-        # Aseguramos que el cálculo cubra desde hoy hacia atrás hasta la fecha requerida
         calc_start = min(req_start, min_db_date)
         calc_end = max(req_end, today)
         
-        # 4. Calcular Cambio Neto Diario (Ingresos - Gastos)
-        # Agrupamos por día para no iterar transacción por transacción
         daily_changes = df_trans.groupby(['date', 'type'])['amount'].sum().unstack(fill_value=0)
-        
-        # Asegurar columnas
         if 'Income' not in daily_changes.columns: daily_changes['Income'] = 0
         if 'Expense' not in daily_changes.columns: daily_changes['Expense'] = 0
         
         daily_changes['net_change'] = daily_changes['Income'] - daily_changes['Expense']
         
-        # 5. Reindexar para tener TODOS los días (incluso los que no hubo movimientos)
         full_idx = pd.date_range(start=calc_start, end=calc_end).date
         df_history = pd.DataFrame(index=full_idx)
         df_history.index.name = 'date'
         
-        # Unimos con los cambios
         df_history = df_history.join(daily_changes['net_change']).fillna(0)
-        
-        # 6. Cálculo Retrospectivo (Vectorizado)
-        # Ordenamos descendente (Hoy -> Pasado)
         df_history = df_history.sort_index(ascending=False)
         
-        # La lógica es: NW_Ayer = NW_Hoy - Cambio_Hoy
-        # Usamos cumsum() para acumular los cambios desde hoy hacia atrás
-        # Nota: El cambio de HOY se resta para obtener el saldo de AYER al cierre.
-        # Pero para graficar el saldo DE HOY, necesitamos el saldo actual.
-        
-        # Creamos una serie de "ajustes" acumulativos
-        # shift(1) porque el cambio de hoy afecta al saldo de ayer, no al de hoy (si lo vemos como cierre)
-        # Sin embargo, para simplificar: NW_Dia = NW_Actual - Acumulado_Cambios_Futuros
-        
         cumulative_changes = df_history['net_change'].cumsum()
-        
-        # NW Histórico = NW Actual (Fijo) - Cambio Acumulado + Cambio del propio día (para incluirlo en el saldo del día)
-        # Ajuste matemático: NW(t) = NW(today) - Sum(Changes from t+1 to today)
-        
-        # Manera simple: Restamos el acumulado al NW actual, pero sumamos el cambio del día actual 
-        # porque el acumulado ya lo restó.
         df_history['net_worth'] = current_nw - cumulative_changes + df_history['net_change']
         
-        # 7. Filtrar por el rango solicitado por el usuario
-        df_history = df_history.sort_index() # Ordenar ascendente para el gráfico
-        
-        # Convertir índice a columna para filtrar
-        df_history = df_history.reset_index()
-        
+        df_history = df_history.sort_index().reset_index()
         mask = (df_history['date'] >= req_start) & (df_history['date'] <= req_end)
-        final_df = df_history.loc[mask]
-        
-        return final_df
+        return df_history.loc[mask]
 
-    except Exception as e:
-        print(f"Error history: {e}")
-        return pd.DataFrame()
     finally:
         conn.close()
 
-# backend/data_manager.py
+
+# backend/data_manager.p
+# 
+# y
 # backend/data_manager.py
 
 # backend/data_manager.py (MODIFICADO)
@@ -1612,12 +1431,13 @@ def get_portfolio_breakdown(stocks_list): # <-- ACEPTA LA LISTA DE CACHÉ
     return df_stock, df_industry
 
 
-# backend/data_manager.py (Función add_stock MODIFICADA)
-
 # La función debe aceptar total_investment como argumento
+# backend/data_manager.py
+
 def add_stock(ticker, shares, total_investment, asset_type="Stock", account_id=None):
     conn = get_connection()
     cursor = conn.cursor()
+    uid = get_uid()  # 1. Obtenemos el ID
     
     # --- AUTO-DETECTAR TIPO AL GUARDAR ---
     detected = detect_asset_type(ticker)
@@ -1628,21 +1448,25 @@ def add_stock(ticker, shares, total_investment, asset_type="Stock", account_id=N
     avg_price = total_investment / shares if shares > 0 else 0.0
     
     try:
-        cursor.execute("SELECT MAX(display_order) FROM investments")
+        # Calcular orden solo para este usuario
+        cursor.execute("SELECT MAX(display_order) FROM investments WHERE user_id = ?", (uid,))
         res = cursor.fetchone()
         new_order = (res[0] if res[0] is not None else 0) + 1
 
+        # 2. CORRECCIÓN AQUÍ: Agregamos user_id al INSERT y a los VALUES
         cursor.execute("""
-            INSERT INTO investments (ticker, shares, avg_price, total_investment, asset_type, account_id, display_order)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (ticker.upper(), shares, avg_price, total_investment, asset_type, account_id, new_order))
+            INSERT INTO investments (user_id, ticker, shares, avg_price, total_investment, asset_type, account_id, display_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (uid, ticker.upper(), shares, avg_price, total_investment, asset_type, account_id, new_order))
+        
         conn.commit()
         return True, f"Agregado: {clean_ticker_display(ticker)} ({asset_type})"
     except Exception as e:
         return False, str(e)
     finally:
         conn.close()
-# backend/data_manager.py - Reemplazar la función get_investment_detail
+
+# Ejecutar una vez para limpiar basura de pruebas anteriores
 
 def get_investment_detail(asset_id):
     # Reutilizamos get_stocks_data porque ya hace todo el trabajo sucio
@@ -1685,14 +1509,14 @@ def update_investment(inv_id, new_shares, new_total_investment):
 # ... (Mantener funciones delete_investment, change_investment_order) ...
 def delete_investment(inv_id):
     conn = get_connection()
+    uid = get_uid()
     try:
-        conn.execute("DELETE FROM investments WHERE id = ?", (inv_id,))
+        conn.execute("DELETE FROM investments WHERE id = ? AND user_id = ?", (inv_id, uid))
         conn.commit()
         return True, "Eliminado."
     except Exception as e: return False, str(e)
     finally: conn.close()
 
-# backend/data_manager.py (NUEVA FUNCIÓN)
 
 def get_stock_historical_data(ticker, time_period='1Y'):
     """
@@ -1789,37 +1613,29 @@ def is_ticker_valid(ticker_symbol):
 # backend/data_manager.py (Nuevas Funciones)
 
 def add_realized_pl_adjustment(ticker, realized_pl):
-    """Registra una ganancia/pérdida realizada manualmente (ajuste inicial de historial)."""
+    """Agrega ajuste manual para el usuario actual."""
     conn = get_connection()
-    cursor = conn.cursor()
-    date_recorded = date.today().strftime('%Y-%m-%d')
-    
+    uid = get_uid()
     try:
-        cursor.execute("""
-            INSERT INTO pl_adjustments (date, ticker, realized_pl, description)
-            VALUES (?, ?, ?, ?)
-        """, (date_recorded, ticker.upper(), realized_pl, "Ajuste manual (Pre-sistema)"))
-        
+        conn.execute("""
+            INSERT INTO pl_adjustments (user_id, date, ticker, realized_pl, description)
+            VALUES (?, ?, ?, ?, 'Ajuste manual')
+        """, (uid, date.today().strftime('%Y-%m-%d'), ticker.upper(), realized_pl))
         conn.commit()
-        return True, f"Ajuste de P/L de {ticker.upper()} registrado."
-        
-    except Exception as e:
-        conn.rollback()
-        return False, f"Error DB al registrar ajuste: {str(e)}"
-    finally:
-        conn.close()
+        return True, "Registrado."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+
 
 def get_pl_adjustments_df():
-    """Obtiene todos los ajustes de P/L manuales."""
+    """Ajustes manuales FILTRADOS por usuario."""
     conn = get_connection()
+    uid = get_uid()
     try:
-        df = pd.read_sql_query("SELECT ticker, realized_pl FROM pl_adjustments", conn)
-        return df
-    except Exception as e:
-        print(f"Error fetching P/L adjustments: {e}")
-        return pd.DataFrame({'ticker': [], 'realized_pl': []})
-    finally:
-        conn.close()
+        return pd.read_sql_query("SELECT * FROM pl_adjustments WHERE user_id = ?", conn, params=(uid,))
+    finally: conn.close()
+
+
 
 def get_investments_for_sale_dropdown():
     """Retorna las opciones de ticker para vender (solo si shares > 0)."""
@@ -1839,158 +1655,112 @@ def get_investments_for_sale_dropdown():
 # backend/data_manager.py (Nueva Función)
 
 def undo_investment_transaction(trade_id):
-    """
-    Anula una transacción de inversión (BUY o SELL):
-    1. Obtiene los datos del trade (shares, price, type, ticker).
-    2. Revierte el cambio en la posición de investments (shares y total_investment).
-    3. Elimina el registro de la tabla investment_transactions.
-    """
+    """Anula una transacción verificando que pertenezca al usuario."""
     conn = get_connection()
     cursor = conn.cursor()
+    uid = get_uid()
     
     try:
-        # 1. Obtener datos del trade
-        df_trade = pd.read_sql_query("SELECT * FROM investment_transactions WHERE id = ?", conn, params=(trade_id,))
-        if df_trade.empty:
-            return False, "Transacción no encontrada."
+        # 1. Obtener datos SOLO si pertenece al usuario
+        df_trade = pd.read_sql_query("SELECT * FROM investment_transactions WHERE id = ? AND user_id = ?", conn, params=(trade_id, uid))
+        if df_trade.empty: return False, "Transacción no encontrada o acceso denegado."
             
         trade = df_trade.iloc[0]
         ticker = trade['ticker']
-        trade_type = trade['type']
+        t_type = trade['type']
         shares_delta = trade['shares']
         price = trade['price']
         
-        # 2. Obtener datos actuales de la posición de investments
-        pos = get_investment_by_ticker(ticker)
-        if not pos:
-            # El activo ya fue eliminado, solo borramos la transacción de historial
-            cursor.execute("DELETE FROM investment_transactions WHERE id = ?", (trade_id,))
-            conn.commit()
-            return True, f"Transacción de {ticker} eliminada. El activo ya no estaba en el portafolio."
-
-
-        shares_current = pos['shares']
-        total_investment_current = pos['avg_price'] * shares_current
+        # 2. Obtener posición actual
+        cursor.execute("SELECT shares, avg_price, total_investment FROM investments WHERE ticker = ? AND user_id = ?", (ticker, uid))
+        pos = cursor.fetchone()
         
+        # Si la posición ya no existe (ej. vendió todo), la recreamos si es reversión de venta
+        shares_current = pos[0] if pos else 0.0
+        total_inv_current = pos[2] if pos else 0.0
+        avg_price_current = pos[1] if pos else 0.0
+
         # 3. Lógica de Reversión
-        if trade_type == 'SELL':
-            # Revertir Venta: Sumar acciones y sumar el costo original de esas acciones.
+        if t_type == 'SELL':
+            # Devolver acciones y costo
             new_shares = shares_current + shares_delta
-            # El costo de las acciones vendidas es (shares_delta * avg_cost_at_trade)
             cost_restored = shares_delta * trade['avg_cost_at_trade']
-            new_total_investment = total_investment_current + cost_restored
-            
-        elif trade_type == 'BUY':
-            # Revertir Compra: Restar acciones y restar el costo de esa compra.
+            new_total_inv = total_inv_current + cost_restored
+        elif t_type == 'BUY':
+            # Quitar acciones y costo
             new_shares = shares_current - shares_delta
-            cost_removed = shares_delta * price # Costo de la compra original
-            new_total_investment = total_investment_current - cost_removed
-            
-            if new_shares < -1e-6: # Pequeña tolerancia para errores de flotante
-                 return False, "Error de balance: La anulación dejaría unidades negativas. Revisa el historial de trades."
-        
-        # 4. Calcular Nuevo Costo Promedio
-        new_avg_price = new_total_investment / new_shares if new_shares > 0 else 0.0
-        
-        # 5. Actualizar DB (investments)
-        cursor.execute("""
-            UPDATE investments 
-            SET shares = ?, avg_price = ?, total_investment = ?
-            WHERE ticker = ?
-        """, (new_shares, new_avg_price, new_total_investment, ticker))
-        
-        # 6. Eliminar el registro del historial
+            cost_removed = shares_delta * price
+            new_total_inv = total_inv_current - cost_removed
+            if new_shares < -0.0001: return False, "Saldo negativo resultante."
+
+        new_avg = new_total_inv / new_shares if new_shares > 0 else 0.0
+
+        # 4. Update o Insert en Investments
+        if pos:
+            cursor.execute("UPDATE investments SET shares=?, avg_price=?, total_investment=? WHERE ticker=? AND user_id=?", (new_shares, new_avg, new_total_inv, ticker, uid))
+        else:
+            # Si se había borrado la posición, la revivimos
+            # Nota: Necesitamos un display_order, usamos 0 por defecto
+            cursor.execute("INSERT INTO investments (user_id, ticker, shares, avg_price, total_investment, asset_type) VALUES (?,?,?,?,?, 'Stock')", (uid, ticker, new_shares, new_avg, new_total_inv))
+
+        # 5. Borrar del historial
         cursor.execute("DELETE FROM investment_transactions WHERE id = ?", (trade_id,))
-        
         conn.commit()
-        return True, f"Transacción de {ticker} ({trade_type}) anulada y portafolio revertido."
-        
+        return True, "Revertido."
     except Exception as e:
         conn.rollback()
-        return False, f"Error al anular transacción: {str(e)}"
-    finally:
-        conn.close()
+        return False, str(e)
+    finally: conn.close()
 
 # backend/data_manager.py (Nuevas Funciones Requeridas)
 
-def get_adjustment_id_by_ticker(ticker):
-    """
-    Obtiene el ID de un ajuste manual comparando el ticker visual (limpio) 
-    con los tickers guardados en DB (que pueden ser raw como BINANCE:BTCUSDT).
-    """
-    conn = get_connection()
-    try:
-        # 1. Traemos todos los ajustes (id, monto y nombre original)
-        df = pd.read_sql_query("SELECT id, realized_pl, ticker FROM pl_adjustments", conn)
-        
-        if df.empty: 
-            return None, None
 
-        # 2. Aplicamos la limpieza a los nombres de la DB para poder comparar
-        # clean_ticker_display convierte 'BINANCE:BTCUSDT' en 'BTC'
-        df['ticker_clean'] = df['ticker'].apply(clean_ticker_display)
+def get_adjustment_id_by_ticker(ticker_display):
+    """Busca ID de ajuste filtrando por usuario y limpiando tickers."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        df = pd.read_sql_query("SELECT id, realized_pl, ticker FROM pl_adjustments WHERE user_id = ?", conn, params=(uid,))
+        if df.empty: return None, None
         
-        # 3. Buscamos coincidencia exacta con el ticker visual que recibimos (ej: 'BTC')
-        # El argumento 'ticker' viene del clic en la tabla UI, así que ya está limpio.
-        match = df[df['ticker_clean'] == ticker]
+        # Comparación flexible (limpiando el ticker de la DB para comparar con el visual)
+        df['ticker_clean'] = df['ticker'].apply(clean_ticker_display)
+        match = df[df['ticker_clean'] == ticker_display]
         
         if not match.empty:
-            # Retornamos el ID y el monto encontrados
             return match.iloc[0]['id'], match.iloc[0]['realized_pl']
-        
         return None, None
-        
-    except Exception as e:
-        print(f"Error en get_adjustment_id_by_ticker: {e}")
-        return None, None
-    finally:
-        conn.close()
-# backend/data_manager.py
+    finally: conn.close()
 
-def update_pl_adjustment(adjustment_id, new_pl_amount, new_ticker):
-    """Actualiza el valor Y el ticker de un ajuste P/L existente."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        # Actualizamos Ticker y Monto
-        cursor.execute("""
-            UPDATE pl_adjustments 
-            SET realized_pl = ?, ticker = ? 
-            WHERE id = ?
-        """, (new_pl_amount, new_ticker.upper(), adjustment_id))
-        
-        conn.commit()
-        return True, "Ajuste corregido exitosamente."
-    except Exception as e:
-        conn.rollback()
-        return False, f"Error DB al actualizar ajuste: {str(e)}"
-    finally:
-        conn.close()
 
-# backend/data_manager.py (Nueva Función)
-def get_total_realized_pl():
-    """Calcula la suma total del P/L realizado de ventas y ajustes."""
+def update_pl_adjustment(adj_id, new_pl, new_ticker):
+    """Actualiza un ajuste solo si pertenece al usuario."""
     conn = get_connection()
-    total_pl = 0.0
+    uid = get_uid()
     try:
-        # 1. Sumar P/L de Ventas (SELL)
         cursor = conn.cursor()
-        cursor.execute("SELECT SUM(realized_pl) FROM investment_transactions WHERE type = 'SELL'")
+        cursor.execute("UPDATE pl_adjustments SET realized_pl=?, ticker=? WHERE id=? AND user_id=?", (new_pl, new_ticker.upper(), adj_id, uid))
+        conn.commit()
+        return True, "Actualizado."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+
+def get_total_realized_pl():
+    """Suma P/L de Ventas + Ajustes SOLO del usuario."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        cursor = conn.cursor()
+        # 1. Ventas
+        cursor.execute("SELECT SUM(realized_pl) FROM investment_transactions WHERE type = 'SELL' AND user_id = ?", (uid,))
         sales_pl = cursor.fetchone()[0] or 0.0
         
-        # 2. Sumar P/L de Ajustes Manuales
-        cursor.execute("SELECT SUM(realized_pl) FROM pl_adjustments")
-        adjustments_pl = cursor.fetchone()[0] or 0.0
+        # 2. Ajustes
+        cursor.execute("SELECT SUM(realized_pl) FROM pl_adjustments WHERE user_id = ?", (uid,))
+        adj_pl = cursor.fetchone()[0] or 0.0
         
-        total_pl = sales_pl + adjustments_pl
-        return total_pl
-    except Exception as e:
-        print(f"Error calculating total realized PL: {e}")
-        return 0.0
-    finally:
-        conn.close()
-
-
+        return sales_pl + adj_pl
+    finally: conn.close()
 def get_investment_by_ticker(ticker):
     """Obtiene los datos de un activo específico (shares y avg_price) para el formulario de venta."""
     conn = get_connection()
@@ -2022,101 +1792,99 @@ def get_investment_by_id(inv_id):
 # ... (Las funciones auxiliares get_investment_by_ticker, get_simulator_ticker_data, etc., se mantienen) ...
 
 def add_buy(ticker, shares_bought, buy_price):
-    """
-    Registra una compra en investment_transactions y actualiza la posición en investments.
-    """
+    """Registra una compra y actualiza la posición del usuario."""
     conn = get_connection()
     cursor = conn.cursor()
+    uid = get_uid() # <--- ID DEL USUARIO
     date_bought = date.today().strftime('%Y-%m-%d')
     
     try:
-        # 1. Obtener datos actuales de la posición
-        cursor.execute("SELECT shares, avg_price, total_investment FROM investments WHERE ticker = ?", (ticker,))
+        # 1. Buscar si el usuario YA tiene este activo
+        cursor.execute("SELECT shares, avg_price, total_investment FROM investments WHERE ticker = ? AND user_id = ?", (ticker, uid))
         pos_data = cursor.fetchone()
         
-        # Lógica de posición inexistente (se asume add_stock es la vía principal)
+        total_transaction = shares_bought * buy_price
+        
         if not pos_data or pos_data[0] == 0:
-            total_investment = shares_bought * buy_price
-            success, msg = add_stock(ticker, shares_bought, total_investment)
-            # Después de la inserción inicial, el avg_cost es el buy_price
+            # Nueva posición para este usuario
+            # Usamos la función add_stock que ya actualizamos previamente (asegúrate de que add_stock use user_id)
+            add_stock(ticker, shares_bought, total_transaction)
             avg_cost_at_trade = buy_price 
         else:
-            shares_current, avg_cost_current, total_investment_current = pos_data
+            # Actualizar posición existente del usuario
+            shares_current, avg_cost_current, total_inv_current = pos_data
             
-            # Cálculo de Nuevos Valores
-            cost_new_shares = shares_bought * buy_price
+            new_total_inv = total_inv_current + total_transaction
             new_shares_total = shares_current + shares_bought
-            new_total_investment = total_investment_current + cost_new_shares
-
-            new_avg_price = new_total_investment / new_shares_total
-            avg_cost_at_trade = new_avg_price # Registramos el nuevo promedio después de la compra
+            new_avg_price = new_total_inv / new_shares_total
+            avg_cost_at_trade = new_avg_price 
             
-            # 2. Actualizar DB (investments)
             cursor.execute("""
                 UPDATE investments 
                 SET shares = ?, avg_price = ?, total_investment = ?
-                WHERE ticker = ?
-            """, (new_shares_total, new_avg_price, new_total_investment, ticker))
+                WHERE ticker = ? AND user_id = ?
+            """, (new_shares_total, new_avg_price, new_total_inv, ticker, uid))
             
-        # 3. Registrar en la tabla CONSOLIDADA (investment_transactions)
-        total_transaction = shares_bought * buy_price
+        # 2. Registrar en Historial (Con user_id)
         cursor.execute("""
-            INSERT INTO investment_transactions (date, ticker, type, shares, price, total_transaction, avg_cost_at_trade, realized_pl)
-            VALUES (?, ?, 'BUY', ?, ?, ?, ?, 0.0)
-        """, (date_bought, ticker, shares_bought, buy_price, total_transaction, avg_cost_at_trade))
+            INSERT INTO investment_transactions (user_id, date, ticker, type, shares, price, total_transaction, avg_cost_at_trade, realized_pl)
+            VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?, 0.0)
+        """, (uid, date_bought, ticker, shares_bought, buy_price, total_transaction, avg_cost_at_trade))
         
         conn.commit()
-        return True, f"Compra de {shares_bought} {ticker} registrada."
-        
+        return True, f"Compra registrada."
     except Exception as e:
         conn.rollback()
-        return False, f"Error DB al registrar compra: {str(e)}"
+        return False, f"Error DB: {str(e)}"
     finally:
         conn.close()
 
 
 def add_sale(ticker, shares_sold, sale_price):
-    """
-    Registra una venta en investment_transactions, calcula P/L y actualiza la posición.
-    """
+    """Registra una venta y calcula P/L para el usuario."""
     conn = get_connection()
     cursor = conn.cursor()
+    uid = get_uid()
     date_sold = date.today().strftime('%Y-%m-%d')
     
     try:
-        # 1. Obtener datos de la posición
-        pos = get_investment_by_ticker(ticker)
-        if not pos or pos['shares'] < shares_sold:
-            return False, "Error: Unidades insuficientes."
-            
-        avg_cost = pos['avg_price']
+        # 1. Verificar propiedad del activo
+        cursor.execute("SELECT shares, avg_price, total_investment FROM investments WHERE ticker = ? AND user_id = ?", (ticker, uid))
+        pos = cursor.fetchone()
         
-        # 2. Calcular P/L Realizada
+        if not pos or pos[0] < shares_sold:
+            return False, "Unidades insuficientes."
+            
+        shares_current, avg_cost, total_inv = pos
+        
+        # 2. Calcular P/L
         realized_pl = (sale_price - avg_cost) * shares_sold
         total_transaction = shares_sold * sale_price
         
-        # 3. Registrar en la tabla CONSOLIDADA (investment_transactions)
+        # 3. Registrar Historial (Con user_id)
         cursor.execute("""
-            INSERT INTO investment_transactions (date, ticker, type, shares, price, total_transaction, avg_cost_at_trade, realized_pl)
-            VALUES (?, ?, 'SELL', ?, ?, ?, ?, ?)
-        """, (date_sold, ticker, shares_sold, sale_price, total_transaction, avg_cost, realized_pl))
+            INSERT INTO investment_transactions (user_id, date, ticker, type, shares, price, total_transaction, avg_cost_at_trade, realized_pl)
+            VALUES (?, ?, ?, 'SELL', ?, ?, ?, ?, ?)
+        """, (uid, date_sold, ticker, shares_sold, sale_price, total_transaction, avg_cost, realized_pl))
         
-        # 4. Actualizar unidades restantes en 'investments'
-        new_shares = pos['shares'] - shares_sold
-        new_total_investment = pos['avg_price'] * new_shares # Si las shares bajan, el total investment baja proporcionalmente
+        # 4. Actualizar posición (Reducir shares y total_investment proporcionalmente)
+        new_shares = shares_current - shares_sold
+        # El costo promedio NO cambia en una venta, solo el total invertido baja
+        new_total_investment = avg_cost * new_shares 
         
         cursor.execute("""
-            UPDATE investments SET shares = ?, total_investment = ? WHERE ticker = ?
-        """, (new_shares, new_total_investment, ticker))
+            UPDATE investments SET shares = ?, total_investment = ? WHERE ticker = ? AND user_id = ?
+        """, (new_shares, new_total_investment, ticker, uid))
         
         conn.commit()
-        return True, f"Venta de {shares_sold} {ticker} registrada. P&L: ${realized_pl:,.2f}"
-        
+        return True, f"Venta registrada. P&L: ${realized_pl:,.2f}"
     except Exception as e:
         conn.rollback()
-        return False, f"Error DB al registrar venta: {str(e)}"
+        return False, str(e)
     finally:
         conn.close()
+
+
 
 
 def delete_sale(sale_id):
@@ -2156,25 +1924,28 @@ def delete_sale(sale_id):
 
 
 def get_investment_transactions_df(transaction_type=None):
-    """Obtiene el historial completo de transacciones de inversión (Compra/Venta)."""
+    """Historial de compras/ventas FILTRADO por usuario."""
     conn = get_connection()
+    uid = get_uid()
     try:
+        base_query = "SELECT * FROM investment_transactions WHERE user_id = ?"
+        params = [uid]
+        
         if transaction_type in ['BUY', 'SELL']:
-             query = "SELECT * FROM investment_transactions WHERE type = ? ORDER BY date DESC, id DESC"
-             params = (transaction_type,)
-        else:
-            query = "SELECT * FROM investment_transactions ORDER BY date DESC, id DESC"
-            params = ()
+             base_query += " AND type = ?"
+             params.append(transaction_type)
+             
+        base_query += " ORDER BY date DESC, id DESC"
             
-        df = pd.read_sql_query(query, conn, params=params)
+        df = pd.read_sql_query(base_query, conn, params=params)
         df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
         return df
-    except Exception as e:
-        print(f"Error fetching investment transactions: {e}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
-       
+    except: return pd.DataFrame()
+    finally: conn.close()
+
+
+
+
 # Modificación al setup de la base de datos (database.py)
 # ----------------------------------------------------------------------
 
@@ -2479,5 +2250,63 @@ def add_transfer(date_val, name, amount, source_acc_id, dest_acc_id):
         conn.rollback() # Deshacer cambios si algo falla a la mitad
         print(f"Error en add_transfer: {e}")
         return False, f"Error en transferencia: {e}"
+    finally:
+        conn.close()
+
+# backend/data_manager.py (AGREGAR AL FINAL)
+
+from werkzeug.security import generate_password_hash
+# backend/data_manager.py
+
+def register_user(username, password, email):
+    """
+    Crea un nuevo usuario con normalización de datos:
+    - Username: Sin espacios y en minúsculas (Case Insensitive).
+    - Password: Sin espacios laterales, pero Case Sensitive.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # --- 1. NORMALIZACIÓN DE DATOS (TRIM Y LOWER) ---
+    # Convertimos a minúsculas para que "Prueba" y "prueba" sean lo mismo
+    clean_username = username.strip().lower()
+    clean_email = email.strip().lower()
+    
+    # La contraseña solo se limpia de espacios, pero SE RESPETA el Case (Mayús/Minús)
+    clean_password = password.strip()
+    
+    try:
+        # 2. Verificar si el usuario ya existe (buscando por el normalizado)
+        cursor.execute("SELECT id FROM users WHERE username = ?", (clean_username,))
+        if cursor.fetchone():
+            return False, "El nombre de usuario ya existe."
+
+        # 3. Crear el usuario (Hasheando la contraseña limpia)
+        hashed_pw = generate_password_hash(clean_password, method='pbkdf2:sha256')
+        
+        cursor.execute("""
+            INSERT INTO users (username, password_hash, email) 
+            VALUES (?, ?, ?)
+        """, (clean_username, hashed_pw, clean_email))
+        
+        new_user_id = cursor.lastrowid
+        
+        # 4. Crear Categorías por Defecto
+        defaults = [
+            ('Costos Fijos', new_user_id), 
+            ('Libres (Guilt Free)', new_user_id), 
+            ('Inversión', new_user_id), 
+            ('Ahorro', new_user_id), 
+            ('Deudas/Cobros', new_user_id), 
+            ('Ingresos', new_user_id)
+        ]
+        cursor.executemany("INSERT INTO categories (name, user_id) VALUES (?, ?)", defaults)
+        
+        conn.commit()
+        return True, "Usuario registrado exitosamente."
+        
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error al registrar: {str(e)}"
     finally:
         conn.close()

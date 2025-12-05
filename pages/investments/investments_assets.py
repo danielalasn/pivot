@@ -317,6 +317,7 @@ layout = dbc.Container([
 # 0. Callback Inicial/Actualización: Llama a la API y guarda el DF en el Store.
 # 0. Callback Inicial/Actualización: Llama a la API y guarda el DF en el Store.
 # 0. Callback Inicial/Actualización: Llama a la API y guarda el DF en el Store.
+# 0. Callback Inicial/Actualización: Llama a la API y guarda el DF en el Store.
 @callback(
     [Output('assets-data-cache', 'data'),
      Output('last-updated-inv-label', 'children')], 
@@ -326,24 +327,28 @@ layout = dbc.Container([
     prevent_initial_call=False
 )
 def fetch_and_cache_assets(pathname, signal, refresh_clicks):
-    # Detectar si fue clic manual
+    trigger = ctx.triggered_id
+    
+    # DEBUG 1: Ver si el callback se dispara
+    print(f"--- DEBUG 1: Fetch Callback disparado por: {trigger} | Path: {pathname} ---")
+
     force = False
-    if ctx.triggered_id == "btn-refresh-investments":
+    if trigger == "btn-refresh-investments" or trigger == "asset-update-signal":
         force = True
         
     if pathname == "/inversiones":
-        # 1. Obtener datos (se forza refresh si es clic manual)
+        # Traemos los datos
         stocks_list = dm.get_stocks_data(force_refresh=force)
         
-        # 2. Obtener la fecha REAL de la base de datos
+        # DEBUG 2: Ver qué devolvió la base de datos
+        print(f"--- DEBUG 2: Datos crudos desde DB: {stocks_list} ---")
+        
         timestamp = dm.get_data_timestamp()
         label_text = f"Actualizado: {timestamp}"
         
         return json.dumps(stocks_list), label_text
         
     return no_update, no_update
-
-
 # 1. Abrir/Cerrar Modal Agregar
 @callback(
     [Output("add-asset-modal", "is_open"),
@@ -360,6 +365,7 @@ def toggle_add_modal(open_n, cancel_n, signal, is_open):
     return not is_open, "" 
 
 # 2. Guardar Posición (CON VALIDACIÓN DE TICKER y TOTAL INVESTMENT)
+# 2. Guardar Posición (CON DEBUG)
 @callback(
     [Output("asset-update-signal", "data"),
      Output("asset-modal-msg", "children", allow_duplicate=True)],
@@ -371,10 +377,18 @@ def toggle_add_modal(open_n, cancel_n, signal, is_open):
     prevent_initial_call=True
 )
 def save_asset(n_clicks, ticker, shares, total_investment, signal):
+    # DEBUG A: Ver si el botón funciona
+    print(f"--- DEBUG SAVE: Botón presionado. Datos: {ticker}, {shares}, {total_investment} ---")
+
     if not all([ticker, shares, total_investment]):
+        print("--- DEBUG SAVE ERROR: Faltan datos ---")
         return no_update, html.Span("Faltan datos obligatorios.", className="text-danger")
     
-    if not dm.is_ticker_valid(ticker):
+    # DEBUG B: Ver validación de ticker
+    es_valido = dm.is_ticker_valid(ticker)
+    print(f"--- DEBUG SAVE: Ticker {ticker} válido? {es_valido} ---")
+
+    if not es_valido:
         return no_update, html.Span("Error: El Ticker no existe o no es soportado.", className="text-danger")
 
     try:
@@ -389,7 +403,10 @@ def save_asset(n_clicks, ticker, shares, total_investment, signal):
     except ValueError:
         return no_update, html.Span("Datos numéricos inválidos.", className="text-danger")
 
+    # DEBUG C: Llamando al backend real
+    print("--- DEBUG SAVE: Llamando a dm.add_stock... ---")
     success, msg = dm.add_stock(ticker, shares_f, total_investment_f)
+    print(f"--- DEBUG SAVE RESULTADO: Success={success}, Msg={msg} ---")
     
     if success:
         return (signal + 1), html.Span(msg, className="text-success")
@@ -577,6 +594,10 @@ def render_portfolio_summary(json_assets):
     return final_layout, fig_stock, fig_industry, fig_type
 
 # 3. Generar Cards (Renderiza la cuadrícula de stocks con Heatmap y ordenación)
+# pages/investments/investments_assets.py
+
+# 3. Generar Cards (Renderiza la cuadrícula de stocks con Heatmap y ordenación)
+# 3. Generar Cards (Renderiza la cuadrícula de stocks con Heatmap y ordenación)
 @callback(
     Output("assets-grid", "children"),
     [Input("assets-data-cache", "data"),
@@ -584,21 +605,45 @@ def render_portfolio_summary(json_assets):
      Input("assets-display-tabs", "active_tab")] 
 )
 def render_asset_cards(json_assets, sort_value, active_tab):
+    # DEBUG 3: Ver qué llega al renderizador
+    print(f"--- DEBUG 3: Renderizando Cards. Tab Activa: {active_tab} ---")
+
+    # 1. Validar si el JSON es válido
     if not json_assets or json_assets == '{}':
+        print("--- DEBUG 3A: Cache vacío o nulo ---")
         return html.Div("Cargando datos...", className="text-muted text-center")
 
     stocks = json.loads(json_assets)
+    
+    if not stocks:
+        print("--- DEBUG 3B: Lista de stocks vacía [] ---")
+        return html.Div([
+            html.I(className="bi bi-inbox fs-1 d-block mb-3"),
+            "No tienes posiciones de inversión registradas.",
+            html.Br(),
+            html.Small("Usa el botón '+ Agregar Posición' para comenzar.", className="text-info")
+        ], className="text-muted text-center p-5")
+
+    # 3. Crear DataFrame
     df_stocks = pd.DataFrame(stocks)
     
-    # 1. Mapeo de Tipos de Activos para el filtrado
-    # Usamos 'asset_type' directo porque el backend ya lo corrigió
+    # DEBUG 4: Ver tipos de activos detectados antes de filtrar
+    if 'asset_type' in df_stocks.columns:
+        print(f"--- DEBUG 4: Tipos encontrados en columna asset_type: {df_stocks['asset_type'].unique()} ---")
+    else:
+        print("--- DEBUG 4 ERROR: No existe la columna 'asset_type' en el DataFrame ---")
+        return html.Div("Error estructural: Falta asset_type", className="text-danger")
+
+    # 4. Mapeo de Tipos de Activos
+    # ATENCIÓN: He añadido .strip() y .upper() para hacer el filtro más robusto
     df_stocks['Display_Type'] = df_stocks['asset_type'].apply(lambda x: 
-        'ETF' if x == 'ETF' else (
-        'CRYPTO_FOREX' if x == 'CRYPTO_FOREX' else (
-        'STOCK' if x == 'Stock' else 'OTHER'))
+        'ETF' if str(x).upper().strip() == 'ETF' else (
+        'CRYPTO_FOREX' if str(x).upper().strip() in ['CRYPTO', 'CRYPTO_FOREX', 'FOREX'] else (
+        'STOCK' if str(x).upper().strip() == 'STOCK' else 'OTHER'))
     )
 
-    # 2. Filtrado por Pestaña
+    # 5. Filtrado por Pestaña
+    rows_before = len(df_stocks)
     if active_tab == 'tab-stocks':
         df_stocks = df_stocks[df_stocks['Display_Type'] == 'STOCK']
     elif active_tab == 'tab-etfs':
@@ -608,10 +653,13 @@ def render_asset_cards(json_assets, sort_value, active_tab):
     elif active_tab == 'tab-other':
         df_stocks = df_stocks[df_stocks['Display_Type'] == 'OTHER']
     
+    # DEBUG 5: Resultado del filtro
+    print(f"--- DEBUG 5: Filas antes: {rows_before} -> Filas después de filtrar por {active_tab}: {len(df_stocks)} ---")
+    
     if df_stocks.empty:
-        return html.Div("No hay activos en esta categoría.", className="text-muted text-center p-4")
+        return html.Div(f"No hay activos en la categoría {active_tab}.", className="text-muted text-center p-4")
 
-    # 3. Ordenación (Igual que antes)
+    # 6. Ordenación
     if sort_value == 'ticker_asc': df_stocks = df_stocks.sort_values(by='ticker', ascending=True)
     elif sort_value == 'ticker_desc': df_stocks = df_stocks.sort_values(by='ticker', ascending=False)
     elif sort_value == 'market_value_desc': df_stocks = df_stocks.sort_values(by='market_value', ascending=False)
@@ -621,7 +669,7 @@ def render_asset_cards(json_assets, sort_value, active_tab):
     elif sort_value == 'total_gain_pct_desc': df_stocks = df_stocks.sort_values(by='total_gain_pct', ascending=False)
     elif sort_value == 'total_gain_pct_asc': df_stocks = df_stocks.sort_values(by='total_gain_pct', ascending=True)
         
-    # 4. Generar las tarjetas
+    # 7. Generar las tarjetas
     cards = []
     for index, s in df_stocks.iterrows(): 
         total_color = "text-success" if s['total_gain'] >= 0 else "text-danger"
@@ -629,24 +677,20 @@ def render_asset_cards(json_assets, sort_value, active_tab):
         day_color = "text-success" if s['day_change_pct'] >= 0 else "text-danger"
         day_sign = "+" if s['day_change_pct'] >= 0 else ""
         
-        # Ganancia diaria en $
+        # Corrección de división por cero
         if (1 + s['day_change_pct']/100) != 0:
             prev_val = s['market_value'] / (1 + s['day_change_pct']/100)
             day_gain_usd = s['market_value'] - prev_val
         else: day_gain_usd = 0.0
 
-        # --- CAMBIO CLAVE AQUÍ: Usar 'display_ticker' ---
         display_ticker = s.get('display_ticker', s['ticker']) 
         display_name = s.get('name', display_ticker)
-        # -----------------------------------------------
-
         card_bg_class = 'bg-heatmap-positive' if s['day_change_pct'] >= 0 else 'bg-heatmap-negative'
 
         card = dbc.Col(
             dbc.Card([
                 dbc.CardBody([
                     html.Div([
-                        # Usamos display_ticker (BTC) en vez de ticker (BINANCE:...)
                         html.H3(display_ticker, className="fw-bold mb-0 text-white"),
                         html.Small(display_name, className="text-muted text-uppercase fw-bold", style={"fontSize": "0.75rem"}),
                         
@@ -687,7 +731,8 @@ def render_asset_cards(json_assets, sort_value, active_tab):
         cards.append(card)
         
     return cards
-# 4. Abrir Detalle (Click en Card) - MODIFICADO (Cuerpo y Footer)
+
+
 # 4. Abrir Detalle (Click en Card) - MODIFICADO
 @callback(
     [Output("detail-asset-modal", "is_open"),
@@ -965,6 +1010,7 @@ def save_edited_asset(n_clicks, shares, total_investment, asset_id, signal):
 
 
 # X. Callback de Visibilidad: Oculta el Loader y Muestra el Dashboard cuando hay datos
+# X. Callback de Visibilidad: Oculta el Loader y Muestra el Dashboard cuando hay datos
 @callback(
     [Output("initial-loader", "style"),
      Output("main-dashboard-view", "style")],
@@ -976,7 +1022,14 @@ def toggle_dashboard_visibility(json_assets):
         "flexDirection": "column", "justifyContent": "center", "alignItems": "center"
     }
     
-    if not json_assets or json_assets == '{}' or json_assets == '[]':
+    # CORRECCIÓN:
+    # Solo mostramos el loader si es None o '{}' (estado inicial por defecto).
+    # Si json_assets es '[]', significa que la DB respondió "0 activos", 
+    # por lo tanto DEBEMOS ocultar el loader y mostrar el dashboard.
+    
+    if json_assets is None or json_assets == '{}':
         return loader_style, {'display': 'none'}
     
+    # Si llega aquí, es porque hay datos o es una lista vacía '[]' (usuario nuevo).
+    # En ambos casos, queremos ver el dashboard.
     return {'display': 'none'}, {'display': 'block', 'animation': 'fadein 1s'}

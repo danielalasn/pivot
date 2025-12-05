@@ -1,15 +1,19 @@
+# app.py
 import dash
 import dash_bootstrap_components as dbc
+from flask_login import LoginManager
+from backend.models import get_user_by_id
+import os
+from datetime import timedelta
+from dotenv import load_dotenv # <--- 1. Importar librería
 
-# --- En app.py ---
+# 2. Cargar variables de entorno al inicio
+load_dotenv()
 
-# Asegúrate de importar Bootstrap Icons (BI)
 BOOTSTRAP_ICONS = "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
 
-# Usamos dash-bootstrap-components para un diseño moderno y responsivo.
 app = dash.Dash(
     __name__,
-    # Añadimos BOOTSTRAP_ICONS a la lista de hojas de estilo
     external_stylesheets=[dbc.themes.CYBORG, BOOTSTRAP_ICONS],
     suppress_callback_exceptions=True,
     meta_tags=[
@@ -17,7 +21,22 @@ app = dash.Dash(
     ],
 )
 
-# Referencia al servidor para despliegue (ej. Gunicorn)
+app.title = "Pívot Finance"
+
 server = app.server
 
-app.title = "Pívot Finance"
+# --- CONFIGURACIÓN DE SEGURIDAD (MEJORADA) ---
+# 3. Leemos desde el .env. 
+# El segundo parámetro es un "fallback" por si no encuentra la variable en el .env
+server.config.update(
+    SECRET_KEY=os.getenv("FLASK_SECRET_KEY", "clave_default_dev_12345"), 
+    REMEMBER_COOKIE_DURATION=timedelta(days=7)
+)
+
+login_manager = LoginManager()
+login_manager.init_app(server)
+login_manager.login_view = '/login'
+
+@login_manager.user_loader
+def load_user(user_id):
+    return get_user_by_id(user_id)
