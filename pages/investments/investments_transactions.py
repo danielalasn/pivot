@@ -7,7 +7,25 @@ from utils import ui_helpers
 
 # --- MODAL 1: REGISTRAR COMPRA (BUY) ---
 # El Store ID 'trans-asset-ticker-store' está en investments_assets.py
+def smart_format(val):
+    if val is None or val == 0:
+        return "0"
+    
+    try:
+        val_f = float(val)
+    except:
+        return str(val)
 
+    if val_f.is_integer():
+        return f"{int(val_f):,}"
+    
+    val_abs = abs(val_f)
+    if val_abs >= 0.01:
+        return f"{val_f:,.2f}"
+    else:
+        # Redondeo a 5 decimales y limpieza
+        return f"{val_f:.5f}".rstrip('0').rstrip('.')
+    
 buy_modal = dbc.Modal([
     dbc.ModalHeader(dbc.ModalTitle(id="buy-modal-title", children="Registrar Compra")),
     dbc.ModalBody([
@@ -89,13 +107,15 @@ def toggle_buy_modal(open_n, cancel_n, ticker):
         pos = dm.get_investment_by_ticker(ticker)
         data = dm.get_simulator_ticker_data(ticker)
         
-        # CAMBIO AQUÍ: Usamos {ticker} en el título para ver el nombre REAL (Ej: BINANCE:BTCUSDT)
         modal_title = f"Registrar Compra: {ticker}"
         
-        shares_info = f"Activo: {ticker}. Unidades actuales: {pos['shares'] if pos else 0:,.2f}."
+        # --- CAMBIO AQUÍ: Usamos smart_format ---
+        cantidad = pos['shares'] if pos else 0
+        shares_info = f"Activo: {ticker}. Unidades actuales: {smart_format(cantidad)}."
+        
         current_price = data['current_price'] if data and data['current_price'] else 0
         
-        return True, modal_title, shares_info, "", current_price 
+        return True, modal_title, shares_info, "", current_price
         
     return no_update, no_update, no_update, no_update, no_update
 
@@ -121,10 +141,11 @@ def toggle_sell_modal(open_n, cancel_n, ticker):
 
         shares = pos['shares'] if pos else 0
         
-        # CAMBIO AQUÍ: Título explícito con el Ticker Real
         modal_title = f"Registrar Venta: {ticker}"
         
-        shares_info = f"Activo: {ticker}. Unidades disponibles: {shares:,.2f}."
+        # --- CAMBIO AQUÍ: Usamos smart_format ---
+        shares_info = f"Activo: {ticker}. Unidades disponibles: {smart_format(shares)}."
+        
         current_price = data['current_price'] if data and data['current_price'] else 0
         
         return True, modal_title, shares_info, current_price, ""

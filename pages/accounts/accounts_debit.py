@@ -315,16 +315,15 @@ def deb_save_db(n, name, dtype, bal, bank, bank_cust, edit_id):
     
     bank_n = bank_cust if bank == "Otros" and dtype != "Cash" else (bank if dtype != "Cash" else "-")
     val = float(bal) if bal else 0.0
-    
+
     if edit_id:
-        dm.update_account(edit_id, name, dtype, val, bank_n, 0, None, None, 0, 0, 0, 0, 0)
+        dm.update_account(edit_id, name, dtype, val, bank_n, 0, None, None, 0, 0)
         msg = html.Span("Actualizado", className="text-success")
     else:
-        dm.add_account(name, dtype, val, bank_n, 0, None, None, 0, 0, 0, 0, 0)
+        dm.add_account(name, dtype, val, bank_n, 0, None, None, 0, 0)
         msg = html.Span("Creado", className="text-success")
     
     return msg, False # Cierra el modal
-
 # 8. Borrar
 @callback(Output("deb-modal-delete", "is_open"), [Input("deb-btn-trigger-delete", "n_clicks"), Input("deb-btn-cancel-del", "n_clicks"), Input("deb-btn-confirm-del", "n_clicks")], prevent_initial_call=True)
 def deb_del_modal(trig, cancel, confirm): return True if ctx.triggered_id == "deb-btn-trigger-delete" else False

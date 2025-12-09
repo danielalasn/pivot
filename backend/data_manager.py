@@ -409,24 +409,96 @@ def delete_installment(installment_id):
     finally: conn.close()
 
 # --- TRANSACCIONES Y ANALYTICS ---
+def get_dashboard_metrics(selected_month_str=None):
+    """
+    Calcula Ingresos y Gastos REALES (excluyendo transferencias y movimientos internos).
+    selected_month_str: Formato 'YYYY-MM'. Si es None, usa el mes actual.
+    """
+    df = get_transactions_df() # Esta ya filtra por usuario
+    if df.empty:
+        return 0.0, 0.0
+
+    # 1. Filtrar por fecha (Mes seleccionado)
+    if not selected_month_str:
+        selected_month_str = date.today().strftime('%Y-%m')
+    
+    # Aseguramos formato fecha
+    df['date'] = pd.to_datetime(df['date'])
+    df['Month'] = df['date'].dt.strftime('%Y-%m')
+    df_month = df[df['Month'] == selected_month_str]
+
+    if df_month.empty:
+        return 0.0, 0.0
+
+    # 2. EL FILTRO MÁGICO: Excluir categorías de movimiento interno
+    # Deben coincidir EXACTAMENTE con cómo las guardas en add_transfer
+    excluded_cats = ['Transferencia', 'Deudas/Cobros', 'Transferencia/Pago']
+    
+    # Filtramos el DataFrame para quitar esas categorías
+    df_clean = df_month[~df_month['category'].isin(excluded_cats)]
+
+    # 3. Calcular totales
+    total_income = df_clean[df_clean['type'] == 'Income']['amount'].sum()
+    total_expense = df_clean[df_clean['type'] == 'Expense']['amount'].sum()
+
+    return total_income, total_expense
+
+# backend/data_manager.py
+
+def _check_sufficient_funds(cursor, account_id, amount, user_id):
+    """
+    Verifica si la cuenta tiene fondos (o crédito) suficiente.
+    Retorna: (True/False, Mensaje de error)
+    """
+    cursor.execute("SELECT type, current_balance, credit_limit, name FROM accounts WHERE id = ? AND user_id = ?", (account_id, user_id))
+    res = cursor.fetchone()
+    
+    if not res: 
+        return False, "Cuenta no encontrada."
+    
+    acc_type, current_balance, credit_limit, acc_name = res
+    
+    # CASO 1: TARJETA DE CRÉDITO
+    # Disponible = Límite - Deuda Actual
+    if acc_type == 'Credit':
+        available = credit_limit - current_balance
+        if amount > available:
+            return False, f"Límite excedido en {acc_name}. Disp: ${available:,.2f}"
+            
+    # CASO 2: DÉBITO / EFECTIVO
+    # Disponible = Saldo Actual
+    else:
+        if amount > current_balance:
+            return False, f"Fondos insuficientes en {acc_name}. Disp: ${current_balance:,.2f}"
+            
+    return True, "OK"
+
+# backend/data_manager.py
+
 def add_transaction(date, name, amount, category, trans_type, account_id, subcategory=None):
     conn = get_connection()
     cursor = conn.cursor()
     uid = get_uid()
     try:
-        # Insertar con user_id
+        # --- VALIDACIÓN DE FONDOS (NUEVO) ---
+        if trans_type == 'Expense':
+            has_funds, error_msg = _check_sufficient_funds(cursor, account_id, amount, uid)
+            if not has_funds:
+                return False, error_msg
+        # ------------------------------------
+
         cursor.execute("""
             INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (uid, date, name, amount, category, trans_type, account_id, subcategory))
         
-        # Ajuste de saldo (validando que la cuenta sea del usuario)
         _adjust_account_balance(cursor, account_id, amount, trans_type, is_reversal=False, user_id=uid)
         
         conn.commit()
         return True, "Registrado."
     except Exception as e: return False, str(e)
     finally: conn.close()
+
 
 def get_transactions_df():
     conn = get_connection()
@@ -482,14 +554,26 @@ def get_net_worth():
     finally:
         conn.close()
 
+# backend/data_manager.py
+
 def get_monthly_summary():
-    """Flujo de caja mensual del usuario."""
-    df = get_transactions_df() # Esta función ya filtra por usuario internamente
+    """Flujo de caja mensual del usuario (FILTRADO PARA GRÁFICAS)."""
+    df = get_transactions_df()
     if df.empty: return pd.DataFrame()
+    
+    # --- CORRECCIÓN: Filtro estricto para Análisis ---
+    # Excluimos movimientos que no son flujo de caja real
+    excluded_cats = ['Transferencia', 'Transferencia/Pago', 'Deudas/Cobros']
+    
+    # Filtramos: Nos quedamos con lo que NO está en la lista excluida
+    df = df[~df['category'].isin(excluded_cats)]
+    # -------------------------------------------------------------
+
     df['date'] = pd.to_datetime(df['date'])
     df['Month'] = df['date'].dt.strftime('%Y-%m')
+    
+    # Agrupamos
     return df.groupby(['Month', 'type'])['amount'].sum().reset_index()
-
 
 def get_category_summary():
     """Gastos por categoría del usuario."""
@@ -612,88 +696,89 @@ def get_transaction_by_id(trans_id):
 
 # backend/data_manager.py
 
+# backend/data_manager.py
+
 def _adjust_account_balance(cursor, account_id, amount, trans_type, is_reversal=False, user_id=None):
     if user_id is None: return 
 
-    # Caso Reserva
+    # --- CASO ESPECIAL: RESERVA DE ABONO ---
     if account_id == 'RESERVE':
         cursor.execute("SELECT balance FROM abono_reserve WHERE user_id = ?", (user_id,))
         res = cursor.fetchone()
-        if not res: 
-            cursor.execute("INSERT INTO abono_reserve (user_id, balance) VALUES (?, 0.0)", (user_id,))
-            current = 0.0
-        else: current = res[0]
+        if not res: return # No existe reserva para este usuario
         
-        mult = -1 if is_reversal else 1
-        change = (amount * mult) if trans_type == 'Income' else (amount * mult * -1)
-        cursor.execute("UPDATE abono_reserve SET balance = ? WHERE user_id = ?", (current + change, user_id))
+        # Factor: Si es reversión (borrar), invertimos el signo (-1)
+        factor = -1 if is_reversal else 1
+        
+        # En Reserva: Ingreso SUMA, Gasto RESTA
+        change = (amount * factor) if trans_type == 'Income' else (amount * factor * -1)
+        
+        cursor.execute("UPDATE abono_reserve SET balance = balance + ? WHERE user_id = ?", (change, user_id))
         return
 
-    # Caso Cuenta Normal
+    # --- CASO NORMAL: CUENTAS BANCARIAS Y TARJETAS ---
     cursor.execute("SELECT type, current_balance FROM accounts WHERE id = ? AND user_id = ?", (account_id, user_id))
     res = cursor.fetchone()
-    if not res: return
+    if not res: return # Cuenta no encontrada
     
     acc_type, current = res
-    mult = -1 if is_reversal else 1
+    factor = -1 if is_reversal else 1
     
+    change = 0.0
+
     if acc_type == 'Credit':
-        # Gasto SUMA deuda, Ingreso RESTA
-        change = (amount * mult) if trans_type == 'Expense' else (amount * mult * -1)
+        # EN TARJETA DE CRÉDITO (El saldo representa DEUDA):
+        # - Un Gasto AUMENTA la deuda. (Al borrar gasto -> Disminuye deuda)
+        # - Un Ingreso (Pago) DISMINUYE la deuda. (Al borrar pago -> Aumenta deuda)
+        if trans_type == 'Expense':
+            change = amount * factor      # Ej: Borrar Gasto $30 -> 30 * -1 = -30 (Resta deuda)
+        else: 
+            change = amount * factor * -1 # Ej: Borrar Pago $30 -> 30 * -1 * -1 = +30 (Regresa deuda)
     else:
-        # Gasto RESTA saldo, Ingreso SUMA
-        change = (amount * mult * -1) if trans_type == 'Expense' else (amount * mult)
+        # EN DÉBITO / EFECTIVO (El saldo representa DINERO REAL):
+        # - Un Gasto RESTA dinero. (Al borrar gasto -> Suma dinero)
+        # - Un Ingreso SUMA dinero. (Al borrar ingreso -> Resta dinero)
+        if trans_type == 'Expense':
+            change = amount * factor * -1 # Ej: Borrar Gasto $30 -> 30 * -1 * -1 = +30 (Regresa dinero)
+        else:
+            change = amount * factor      # Ej: Borrar Ingreso $30 -> 30 * -1 = -30 (Quita dinero)
         
     cursor.execute("UPDATE accounts SET current_balance = current_balance + ? WHERE id = ? AND user_id = ?", (change, account_id, user_id))
 
-
+# backend/data_manager.py
 
 def delete_transaction(trans_id):
     conn = get_connection()
     cursor = conn.cursor()
     uid = get_uid()
     try:
-        trans = get_transaction_by_id(trans_id) # Esta función ya filtra por usuario internamente
-        if not trans: return False, "No encontrado."
+        # 1. Obtener los detalles de la transacción ANTES de borrarla
+        # (Necesitamos saber el monto y la cuenta para devolver el dinero)
+        trans = get_transaction_by_id(trans_id) 
         
-        _adjust_account_balance(cursor, trans['account_id'], trans['amount'], trans['type'], is_reversal=True, user_id=uid)
+        if not trans: 
+            return False, "Transacción no encontrada."
         
+        # 2. Revertir el saldo (Devolver el dinero a la cuenta)
+        # Nota: Pasamos is_reversal=True
+        _adjust_account_balance(
+            cursor, 
+            trans['account_id'], 
+            trans['amount'], 
+            trans['type'], 
+            is_reversal=True, 
+            user_id=uid
+        )
+        
+        # 3. Eliminar el registro definitivamente
         cursor.execute("DELETE FROM transactions WHERE id = ? AND user_id = ?", (trans_id, uid))
-        conn.commit()
-        return True, "Eliminado."
-    except Exception as e:
-        conn.rollback()
-        return False, str(e)
-    finally: conn.close()
-
-
-
-def update_transaction(trans_id, new_date, new_name, new_amount, new_category, new_type, new_account_id, new_subcategory=None):
-    conn = get_connection()
-    cursor = conn.cursor()
-    uid = get_uid()
-    try:
-        # Verificar propiedad
-        old_trans = get_transaction_by_id(trans_id)
-        if not old_trans: return False, "No encontrado."
-
-        _adjust_account_balance(cursor, old_trans['account_id'], old_trans['amount'], old_trans['type'], is_reversal=True, user_id=uid)
         
-        cursor.execute("""
-            UPDATE transactions 
-            SET date = ?, name = ?, amount = ?, category = ?, type = ?, account_id = ?, subcategory = ?
-            WHERE id = ? AND user_id = ?
-        """, (new_date, new_name, new_amount, new_category, new_type, new_account_id, new_subcategory, trans_id, uid))
-
-        _adjust_account_balance(cursor, new_account_id, new_amount, new_type, is_reversal=False, user_id=uid)
         conn.commit()
-        return True, "Actualizado."
+        return True, "Transacción eliminada y saldo corregido."
     except Exception as e:
         conn.rollback()
         return False, str(e)
     finally: conn.close()
-
-
 
 # data_manager.py
 
@@ -1161,47 +1246,29 @@ def get_subcategories_by_parent(parent):
     except: return []
     finally: conn.close()
 
-# --- MODIFICAR ESTAS FUNCIONES EXISTENTES PARA INCLUIR 'subcategory' ---
-
-# Firma nueva: agregar argumento 'subcategory'
-def add_transaction(date, name, amount, category, t_type, account_id, subcategory=None):
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        # Incluir subcategory en el INSERT
-        cursor.execute("""
-            INSERT INTO transactions (date, name, amount, category, type, account_id, subcategory) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (date, name, amount, category, t_type, account_id, subcategory))
-        
-        # ... (Lógica de actualización de saldo de cuenta se mantiene igual) ...
-        _adjust_account_balance(cursor, account_id, amount, t_type, is_reversal=False)
-        
-        conn.commit()
-        return True, "Registrado."
-    except Exception as e: return False, str(e)
-    finally: conn.close()
+# --- MODIFICAR ESTAS FUNCIONES EXISTENTES PARA INCLUIR 'subcategory' --
 
 def update_transaction(trans_id, new_date, new_name, new_amount, new_category, new_type, new_account_id, new_subcategory=None):
     conn = get_connection()
     cursor = conn.cursor()
+    uid = get_uid() # <--- 1. Obtenemos el usuario
     try:
+        # Verificar propiedad y obtener datos viejos
         old_trans = get_transaction_by_id(trans_id)
-        if not old_trans: return False, "Original no encontrada."
+        if not old_trans: return False, "No encontrado."
 
-        # 1. Reversar saldo anterior
-        _adjust_account_balance(cursor, old_trans['account_id'], old_trans['amount'], old_trans['type'], is_reversal=True)
+        # 2. Reversar saldo anterior (pasando user_id)
+        _adjust_account_balance(cursor, old_trans['account_id'], old_trans['amount'], old_trans['type'], is_reversal=True, user_id=uid)
         
-        # 2. Update con subcategory
+        # 3. Update seguro con user_id en el WHERE
         cursor.execute("""
             UPDATE transactions 
             SET date = ?, name = ?, amount = ?, category = ?, type = ?, account_id = ?, subcategory = ?
-            WHERE id = ?
-        """, (new_date, new_name, new_amount, new_category, new_type, new_account_id, new_subcategory, trans_id))
+            WHERE id = ? AND user_id = ?
+        """, (new_date, new_name, new_amount, new_category, new_type, new_account_id, new_subcategory, trans_id, uid))
 
-        # 3. Aplicar nuevo saldo
-        _adjust_account_balance(cursor, new_account_id, new_amount, new_type, is_reversal=False)
-        
+        # 4. Aplicar nuevo saldo (pasando user_id)
+        _adjust_account_balance(cursor, new_account_id, new_amount, new_type, is_reversal=False, user_id=uid)
         conn.commit()
         return True, "Actualizado."
     except Exception as e:
@@ -2194,119 +2261,954 @@ def process_card_payment(card_id, amount, source_id=None):
     finally:
         conn.close()
 
+# backend/data_manager.py
+
 def add_transfer(date_val, name, amount, source_acc_id, dest_acc_id):
-    """
-    Registra una transferencia interna como dos movimientos:
-    1. Gasto (Expense) en la cuenta origen.
-    2. Ingreso (Income) en la cuenta destino.
-    Usa la categoría 'Transferencia' y ajusta saldos automáticamente.
-    """
     conn = get_connection()
     cursor = conn.cursor()
-    
+    uid = get_uid()
+
     try:
-        # 1. Obtener nombres de las cuentas para que el registro se vea bonito
-        cursor.execute("SELECT name FROM accounts WHERE id = ?", (source_acc_id,))
+        # --- VALIDACIÓN DE FONDOS EN ORIGEN (NUEVO) ---
+        has_funds, error_msg = _check_sufficient_funds(cursor, source_acc_id, amount, uid)
+        if not has_funds:
+            return False, error_msg
+        # ----------------------------------------------
+
+        # Obtener nombres (solo para el texto del registro)
+        cursor.execute("SELECT name FROM accounts WHERE id = ? AND user_id = ?", (source_acc_id, uid))
         res_src = cursor.fetchone()
         src_name = res_src[0] if res_src else "Cuenta Origen"
 
-        cursor.execute("SELECT name FROM accounts WHERE id = ?", (dest_acc_id,))
+        cursor.execute("SELECT name FROM accounts WHERE id = ? AND user_id = ?", (dest_acc_id, uid))
         res_dest = cursor.fetchone()
         dest_name = res_dest[0] if res_dest else "Cuenta Destino"
 
-        # Detalle adicional si el usuario escribió algo
         user_detail = f": {name}" if name and name != "-" else ""
 
-        # ---------------------------------------------------------
-        # PASO A: RETIRO DEL ORIGEN (Expense)
-        # ---------------------------------------------------------
+        # 1. RETIRO (Expense)
         trans_name_out = f"Transferencia a {dest_name}{user_detail}"
-        
         cursor.execute("""
-            INSERT INTO transactions (date, name, amount, category, type, account_id, subcategory)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (date_val, trans_name_out, amount, "Transferencia", "Expense", source_acc_id, "Movimiento Interno"))
+            INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (uid, date_val, trans_name_out, amount, "Transferencia", "Expense", source_acc_id, "Movimiento Interno"))
 
-        # Actualizar Saldo Origen (Resta)
-        _adjust_account_balance(cursor, source_acc_id, amount, "Expense", is_reversal=False)
+        _adjust_account_balance(cursor, source_acc_id, amount, "Expense", is_reversal=False, user_id=uid)
 
-        # ---------------------------------------------------------
-        # PASO B: DEPÓSITO AL DESTINO (Income)
-        # ---------------------------------------------------------
+        # 2. DEPÓSITO (Income)
         trans_name_in = f"Transferencia desde {src_name}{user_detail}"
-        
         cursor.execute("""
-            INSERT INTO transactions (date, name, amount, category, type, account_id, subcategory)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (date_val, trans_name_in, amount, "Transferencia", "Income", dest_acc_id, "Movimiento Interno"))
+            INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (uid, date_val, trans_name_in, amount, "Transferencia", "Income", dest_acc_id, "Movimiento Interno"))
 
-        # Actualizar Saldo Destino (Suma)
-        _adjust_account_balance(cursor, dest_acc_id, amount, "Income", is_reversal=False)
+        _adjust_account_balance(cursor, dest_acc_id, amount, "Income", is_reversal=False, user_id=uid)
 
         conn.commit()
         return True, "Transferencia realizada con éxito."
         
     except Exception as e:
-        conn.rollback() # Deshacer cambios si algo falla a la mitad
-        print(f"Error en add_transfer: {e}")
+        conn.rollback()
         return False, f"Error en transferencia: {e}"
     finally:
         conn.close()
 
-# backend/data_manager.py (AGREGAR AL FINAL)
+
+def create_fixed_costs_table():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS fixed_costs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        name TEXT NOT NULL,
+        amount REAL NOT NULL, 
+        frequency INTEGER DEFAULT 1, 
+        current_allocation REAL DEFAULT 0.0,
+        due_day INTEGER,
+        description TEXT,
+        is_percentage INTEGER DEFAULT 0,  -- NUEVO (0=No, 1=Si)
+        min_amount REAL DEFAULT 0.0       -- NUEVO
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+
+# 1. CREAR TABLA
+def create_savings_table():
+    conn = get_connection()
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS savings_goals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        name TEXT NOT NULL,
+        target_amount REAL NOT NULL, 
+        current_saved REAL DEFAULT 0.0,
+        target_date TEXT, -- YYYY-MM-DD
+        icon TEXT,        -- Para futuro (ej. 'car-front', 'plane')
+        display_order INTEGER DEFAULT 0
+    )
+    """)
+    conn.commit()
+    conn.close()
+
 
 from werkzeug.security import generate_password_hash
 # backend/data_manager.py
+# --- EN backend/data_manager.py ---
 
-def register_user(username, password, email):
-    """
-    Crea un nuevo usuario con normalización de datos:
-    - Username: Sin espacios y en minúsculas (Case Insensitive).
-    - Password: Sin espacios laterales, pero Case Sensitive.
-    """
+# 1. MODIFICA esta función existente para agregar la columna 'last_total_income'
+def check_and_update_users_table():
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        # 1. Asegurar tablas base
+        create_fixed_costs_table()
+        create_savings_table()
+
+        # 2. Verificar columnas en USERS
+        cursor.execute("PRAGMA table_info(users)")
+        user_columns = [info[1] for info in cursor.fetchall()]
+
+        # Costos Fijos
+        if 'fc_fund_account_id' not in user_columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN fc_fund_account_id INTEGER")
+            
+        # Ahorros
+        if 'sv_fund_account_id' not in user_columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN sv_fund_account_id INTEGER")
+
+        # Inversiones
+        if 'inv_fund_account_id' not in user_columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN inv_fund_account_id INTEGER")
+
+        # Guilt Free
+        if 'gf_fund_account_id' not in user_columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN gf_fund_account_id INTEGER")
+            
+        # Cuenta Origen (Ingreso Default)
+        if 'income_account_id' not in user_columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN income_account_id INTEGER")
+            
+        # --- NUEVO: ÚLTIMO INGRESO REGISTRADO ---
+        if 'last_total_income' not in user_columns:
+            print("Migrando DB: Agregando last_total_income...")
+            cursor.execute("ALTER TABLE users ADD COLUMN last_total_income REAL DEFAULT 0.0")
+
+        conn.commit()
+    except Exception as e:
+        print(f"Error migrando DB: {e}")
+    finally:
+        conn.close()
+
+# 2. AGREGA estas funciones 'Getter' para Inversión y GF
+def get_user_inv_fund_account():
+    """Obtiene el ID de la cuenta de inversión guardada."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT inv_fund_account_id FROM users WHERE id = ?", (uid,))
+        res = cur.fetchone()
+        return res[0] if res else None
+    finally: conn.close()
+
+def get_user_gf_fund_account():
+    """Obtiene el ID de la cuenta Guilt Free guardada."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT gf_fund_account_id FROM users WHERE id = ?", (uid,))
+        res = cur.fetchone()
+        return res[0] if res else None
+    finally: conn.close()
+
+# 3. AGREGA estas funciones para gestionar el 'Last Total Income'
+def get_user_last_income():
+    """Recupera el último ingreso ingresado por el usuario."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT last_total_income FROM users WHERE id = ?", (uid,))
+        res = cur.fetchone()
+        return res[0] if res else 0.0
+    finally: conn.close()
+
+def update_user_last_income(amount):
+    """Guarda el ingreso actual para la próxima vez."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("UPDATE users SET last_total_income = ? WHERE id = ?", (amount, uid))
+        conn.commit()
+        return True
+    except: return False
+    finally: conn.close()
+# Ejecuta la migración al importar
+check_and_update_users_table()
+
+def get_all_users_detailed():
+    """Retorna lista completa con nuevos campos."""
+    conn = get_connection()
+    try:
+        # Traemos todo excepto el hash del password
+        df = pd.read_sql_query("""
+            SELECT id, username, email, display_name, created_at, last_login 
+            FROM users ORDER BY id ASC
+        """, conn)
+        return df.to_dict('records')
+    finally:
+        conn.close()
+
+def admin_update_user_details(user_id, email, display_name):
+    """Actualiza email y display_name."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE users SET email = ?, display_name = ? WHERE id = ?
+        """, (email, display_name, user_id))
+        conn.commit()
+        return True, "Datos actualizados."
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+def admin_reset_password(user_id, new_password):
+    """Restablece la contraseña de un usuario."""
+    conn = get_connection()
+    try:
+        hashed_pw = generate_password_hash(new_password, method='pbkdf2:sha256')
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hashed_pw, user_id))
+        conn.commit()
+        return True, "Contraseña restablecida."
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+def update_last_login(user_id):
+    """Actualiza la fecha de último login (Llamar desde login.py)."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET last_login = datetime('now', 'localtime') WHERE id = ?", (user_id,))
+        conn.commit()
+    except: pass
+    finally: conn.close()
+
+
+
+# backend/data_manager.py
+
+def register_user(username, password, email, display_name=None):
     conn = get_connection()
     cursor = conn.cursor()
     
-    # --- 1. NORMALIZACIÓN DE DATOS (TRIM Y LOWER) ---
-    # Convertimos a minúsculas para que "Prueba" y "prueba" sean lo mismo
-    clean_username = username.strip().lower()
-    clean_email = email.strip().lower()
+    # 1. Limpieza de datos (SAFE)
+    # Validamos que username exista, si no, cadena vacía (aunque el frontend ya valida)
+    clean_username = username.strip().lower() if username else ""
     
-    # La contraseña solo se limpia de espacios, pero SE RESPETA el Case (Mayús/Minús)
-    clean_password = password.strip()
+    # --- CORRECCIÓN AQUÍ ---
+    # Si email es None (vacío), usamos cadena vacía "" para evitar el error .strip()
+    clean_email = email.strip().lower() if email else "" 
+    # -----------------------
+    
+    # Si no dan display_name, usamos el username capitalizado
+    clean_display = display_name.strip() if display_name else clean_username.capitalize()
     
     try:
-        # 2. Verificar si el usuario ya existe (buscando por el normalizado)
-        cursor.execute("SELECT id FROM users WHERE username = ?", (clean_username,))
-        if cursor.fetchone():
-            return False, "El nombre de usuario ya existe."
+        # Validación básica de usuario requerido
+        if not clean_username:
+            return False, "El nombre de usuario es obligatorio."
 
-        # 3. Crear el usuario (Hasheando la contraseña limpia)
-        hashed_pw = generate_password_hash(clean_password, method='pbkdf2:sha256')
+        cursor.execute("SELECT id FROM users WHERE username = ?", (clean_username,))
+        if cursor.fetchone(): return False, "El usuario ya existe."
+
+        hashed_pw = generate_password_hash(password.strip(), method='pbkdf2:sha256')
         
+        # Insertamos (clean_email será "" si estaba vacío, lo cual es válido como texto)
         cursor.execute("""
-            INSERT INTO users (username, password_hash, email) 
-            VALUES (?, ?, ?)
-        """, (clean_username, hashed_pw, clean_email))
+            INSERT INTO users (username, password_hash, email, display_name, created_at) 
+            VALUES (?, ?, ?, ?, date('now'))
+        """, (clean_username, hashed_pw, clean_email, clean_display))
         
-        new_user_id = cursor.lastrowid
+        new_uid = cursor.lastrowid
         
-        # 4. Crear Categorías por Defecto
+        # Crear categorías por defecto
         defaults = [
-            ('Costos Fijos', new_user_id), 
-            ('Libres (Guilt Free)', new_user_id), 
-            ('Inversión', new_user_id), 
-            ('Ahorro', new_user_id), 
-            ('Deudas/Cobros', new_user_id), 
-            ('Ingresos', new_user_id)
+            ('Costos Fijos', new_uid), ('Libres', new_uid), 
+            ('Inversión', new_uid), ('Ahorro', new_uid), 
+            ('Deudas/Cobros', new_uid), ('Ingresos', new_uid)
         ]
         cursor.executemany("INSERT INTO categories (name, user_id) VALUES (?, ?)", defaults)
         
         conn.commit()
-        return True, "Usuario registrado exitosamente."
+        return True, "Usuario registrado."
+    except Exception as e:
+        conn.rollback()
+        return False, str(e)
+    finally:
+        conn.close()
+# ... (código existente) ...
+
+# --- FUNCIONES DE ADMINISTRADOR ---
+
+def get_all_users():
+    """Retorna una lista de diccionarios con todos los usuarios (sin passwords)."""
+    conn = get_connection()
+    try:
+        # Traemos ID, Username y Email. Omitimos el hash del password por seguridad.
+        df = pd.read_sql_query("SELECT id, username, email FROM users ORDER BY id ASC", conn)
+        return df.to_dict('records')
+    except Exception as e:
+        print(f"Error fetching users: {e}")
+        return []
+    finally:
+        conn.close()
+
+def admin_delete_user(user_id_to_delete):
+    """
+    Elimina un usuario y TODOS sus datos asociados (Cascada manual).
+    Retorna (Success, Message).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # Protección para no borrar al admin principal (asumiendo ID 1 o username 'admin')
+    # Aquí validamos por ID, asumiendo que el admin siempre es el ID 1 o validarlo en frontend
+    if str(user_id_to_delete) == "1": 
+        return False, "No se puede eliminar al usuario Admin principal."
+
+    try:
+        # 1. Borrar Transacciones
+        cursor.execute("DELETE FROM transactions WHERE user_id = ?", (user_id_to_delete,))
+        # 2. Borrar Inversiones e historial
+        cursor.execute("DELETE FROM investments WHERE user_id = ?", (user_id_to_delete,))
+        cursor.execute("DELETE FROM investment_transactions WHERE user_id = ?", (user_id_to_delete,))
+        cursor.execute("DELETE FROM pl_adjustments WHERE user_id = ?", (user_id_to_delete,))
+        # 3. Borrar Cuentas, Cuotas, IOU
+        cursor.execute("DELETE FROM accounts WHERE user_id = ?", (user_id_to_delete,))
+        cursor.execute("DELETE FROM installments WHERE user_id = ?", (user_id_to_delete,))
+        cursor.execute("DELETE FROM iou WHERE user_id = ?", (user_id_to_delete,))
+        # 4. Borrar Categorias y Subcategorias personalizadas
+        cursor.execute("DELETE FROM categories WHERE user_id = ?", (user_id_to_delete,))
+        cursor.execute("DELETE FROM subcategories WHERE user_id = ?", (user_id_to_delete,))
+        # 5. Borrar Reservas
+        cursor.execute("DELETE FROM abono_reserve WHERE user_id = ?", (user_id_to_delete,))
+        
+        # 6. Finalmente, borrar el Usuario
+        cursor.execute("DELETE FROM users WHERE id = ?", (user_id_to_delete,))
+        
+        conn.commit()
+        return True, f"Usuario ID {user_id_to_delete} y todos sus datos eliminados."
         
     except Exception as e:
         conn.rollback()
-        return False, f"Error al registrar: {str(e)}"
+        return False, f"Error al eliminar usuario: {str(e)}"
+    finally:
+        conn.close()
+
+# backend/data_manager.py
+
+
+# backend/data_manager.py
+
+# backend/data_manager.py
+
+def add_fixed_cost(name, amount, frequency, due_day=1, current_allocation=0.0, is_percentage=0, min_amount=0.0):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("""
+            INSERT INTO fixed_costs (user_id, name, amount, frequency, current_allocation, due_day, is_percentage, min_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (uid, name, amount, frequency, current_allocation, due_day, is_percentage, min_amount))
+        conn.commit()
+        return True, "Costo agregado."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+
+def update_fixed_cost(fc_id, name, amount, frequency, due_day, current_allocation, is_percentage, min_amount):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("""
+            UPDATE fixed_costs 
+            SET name=?, amount=?, frequency=?, due_day=?, current_allocation=?, is_percentage=?, min_amount=?
+            WHERE id=? AND user_id=?
+        """, (name, amount, frequency, due_day, current_allocation, is_percentage, min_amount, fc_id, uid))
+        conn.commit()
+        return True, "Actualizado."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+
+def get_fixed_costs_df():
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        # Traemos los datos. Calculamos el "Costo Mensual Equivalente" (amount / frequency)
+        df = pd.read_sql_query("SELECT * FROM fixed_costs WHERE user_id = ?", conn, params=(uid,))
+        if not df.empty:
+            df['monthly_cost'] = df['amount'] / df['frequency']
+        return df
+    except: return pd.DataFrame()
+    finally: conn.close()
+
+def delete_fixed_cost(fc_id):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("DELETE FROM fixed_costs WHERE id=? AND user_id=?", (fc_id, uid))
+        conn.commit()
+        return True, "Eliminado."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+
+def update_fixed_cost_allocation(fc_id, new_allocation):
+    """Actualiza cuánto dinero hay apartado para este costo específico."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("UPDATE fixed_costs SET current_allocation = ? WHERE id = ? AND user_id = ?", (new_allocation, fc_id, uid))
+        conn.commit()
+        return True, "Saldo actualizado."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+
+def get_user_distribution_accounts():
+    """Retorna un dict con TODAS las cuentas por defecto del usuario."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT fc_fund_account_id, sv_fund_account_id, inv_fund_account_id, gf_fund_account_id, income_account_id 
+            FROM users WHERE id = ?
+        """, (uid,))
+        res = cursor.fetchone()
+        if res:
+            return {
+                'FC': res[0],
+                'SV': res[1],
+                'INV': res[2],
+                'GF': res[3],
+                'SOURCE': res[4]
+            }
+        return {'FC': None, 'SV': None, 'INV': None, 'GF': None, 'SOURCE': None}
+    finally:
+        conn.close()
+        
+def update_user_inv_fund_account(account_id):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("UPDATE users SET inv_fund_account_id = ? WHERE id = ?", (account_id, uid))
+        conn.commit()
+        return True
+    finally: conn.close()
+
+def update_user_gf_fund_account(account_id):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("UPDATE users SET gf_fund_account_id = ? WHERE id = ?", (account_id, uid))
+        conn.commit()
+        return True
+    finally: conn.close()
+
+def update_user_income_account(account_id):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("UPDATE users SET income_account_id = ? WHERE id = ?", (account_id, uid))
+        conn.commit()
+        return True
+    finally: conn.close()
+
+def get_user_fc_fund_account():
+    """Obtiene el ID de la cuenta de fondos guardada para el usuario actual."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT fc_fund_account_id FROM users WHERE id = ?", (uid,))
+        res = cur.fetchone()
+        return res[0] if res else None
+    finally: conn.close()
+
+def update_user_fc_fund_account(account_id):
+    """Guarda la preferencia de cuenta de fondos."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("UPDATE users SET fc_fund_account_id = ? WHERE id = ?", (account_id, uid))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error guardando preferencia: {e}")
+        return False
+    finally: conn.close()
+
+def get_distribution_rule_by_id(rule_id):
+    """Obtiene una regla específica para editarla."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        df = pd.read_sql_query("SELECT * FROM distribution_rules WHERE id=? AND user_id=?", conn, params=(rule_id, uid))
+        if not df.empty:
+            return df.iloc[0].to_dict()
+        return None
+    finally: conn.close()
+
+def update_distribution_rule(rule_id, name, alloc_type, value):
+    """Actualiza una regla existente."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("""
+            UPDATE distribution_rules
+            SET name=?, allocation_type=?, value=?
+            WHERE id=? AND user_id=?
+        """, (name, alloc_type, value, rule_id, uid))
+        conn.commit()
+        return True, "Regla actualizada."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+# 3. FUNCIONES CRUD PARA SAVINGS
+# MODIFICAR: add_saving_goal
+def add_saving_goal(name, target_amount, current_saved, target_date=None, 
+                    mode='Date', fixed_val=0.0, pct_val=0.0):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("""
+            INSERT INTO savings_goals (user_id, name, target_amount, current_saved, target_date, 
+                                       contribution_mode, fixed_contribution, percentage_contribution)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (uid, name, target_amount, current_saved, target_date, mode, fixed_val, pct_val))
+        conn.commit()
+        return True, "Meta creada."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+
+# MODIFICAR: update_saving_goal
+def update_saving_goal(goal_id, name, target_amount, current_saved, target_date,
+                       mode, fixed_val, pct_val):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("""
+            UPDATE savings_goals 
+            SET name=?, target_amount=?, current_saved=?, target_date=?,
+                contribution_mode=?, fixed_contribution=?, percentage_contribution=?
+            WHERE id=? AND user_id=?
+        """, (name, target_amount, current_saved, target_date, mode, fixed_val, pct_val, goal_id, uid))
+        conn.commit()
+        return True, "Meta actualizada."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+
+def delete_saving_goal(goal_id):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("DELETE FROM savings_goals WHERE id=? AND user_id=?", (goal_id, uid))
+        conn.commit()
+        return True, "Meta eliminada."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+
+def get_savings_goals_df():
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        return pd.read_sql_query("SELECT * FROM savings_goals WHERE user_id = ?", conn, params=(uid,))
+    finally: conn.close()
+
+# Preferencia de cuenta para Savings
+# backend/data_manager.py
+
+def get_user_sv_fund_account():
+    """Obtiene el ID de la cuenta de ahorros guardada para el usuario."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT sv_fund_account_id FROM users WHERE id = ?", (uid,))
+        res = cur.fetchone()
+        return res[0] if res else None
+    except: return None
+    finally: conn.close()
+
+def update_user_sv_fund_account(account_id):
+    """Guarda la preferencia de cuenta de ahorros."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("UPDATE users SET sv_fund_account_id = ? WHERE id = ?", (account_id, uid))
+        conn.commit()
+        return True
+    except: return False
+    finally: conn.close()
+
+def update_user_sv_fund_account(account_id):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("UPDATE users SET sv_fund_account_id = ? WHERE id = ?", (account_id, uid))
+        conn.commit()
+        return True
+    except: return False
+    finally: conn.close()
+
+# backend/data_manager.py
+
+# --- (Agrega esto al final o en la sección de Distribution) ---
+
+def check_and_update_distribution_schema():
+    """Actualiza la DB para soportar cuentas destino y reglas de distribución."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        # 1. Agregar target_account_id a Fixed Costs
+        cursor.execute("PRAGMA table_info(fixed_costs)")
+        cols = [c[1] for c in cursor.fetchall()]
+        if 'target_account_id' not in cols:
+            cursor.execute("ALTER TABLE fixed_costs ADD COLUMN target_account_id INTEGER")
+        
+        # 2. Agregar target_account_id a Savings Goals
+        cursor.execute("PRAGMA table_info(savings_goals)")
+        cols_sv = [c[1] for c in cursor.fetchall()]
+        if 'target_account_id' not in cols_sv:
+            cursor.execute("ALTER TABLE savings_goals ADD COLUMN target_account_id INTEGER")
+
+        # 3. Nueva tabla para Reglas de Distribución (Inversión / Libres)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS distribution_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                category_type TEXT, -- 'Investment' o 'GuiltFree'
+                name TEXT,
+                allocation_type TEXT, -- 'Percentage' o 'Fixed'
+                value REAL,
+                target_account_id INTEGER
+            )
+        """)
+
+        cursor.execute("PRAGMA table_info(savings_goals)")
+        cols_sv = [c[1] for c in cursor.fetchall()]
+        
+        # Nuevas columnas para estrategias de ahorro
+        if 'contribution_mode' not in cols_sv:
+            print("Migrando DB: Agregando modo de contribución a Savings...")
+            # Modos: 'Date' (Defecto), 'Fixed', 'Percentage'
+            cursor.execute("ALTER TABLE savings_goals ADD COLUMN contribution_mode TEXT DEFAULT 'Date'")
+            cursor.execute("ALTER TABLE savings_goals ADD COLUMN fixed_contribution REAL DEFAULT 0.0")
+            cursor.execute("ALTER TABLE savings_goals ADD COLUMN percentage_contribution REAL DEFAULT 0.0")
+            
+        conn.commit()
+    except Exception as e:
+        print(f"Error migrando DB: {e}")
+    finally:
+        conn.close()
+
+# Ejecutar la migración al inicio
+check_and_update_distribution_schema() 
+
+
+# --- FUNCIONES PARA REGLAS (INVERSION / LIBRES) ---
+
+def add_distribution_rule(cat_type, name, alloc_type, value, target_acc):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("""
+            INSERT INTO distribution_rules (user_id, category_type, name, allocation_type, value, target_account_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (uid, cat_type, name, alloc_type, value, target_acc))
+        conn.commit()
+        return True, "Regla agregada."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+
+def delete_distribution_rule(rule_id):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("DELETE FROM distribution_rules WHERE id=? AND user_id=?", (rule_id, uid))
+        conn.commit()
+        return True, "Eliminado."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+
+def get_distribution_rules(cat_type):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        return pd.read_sql_query("SELECT * FROM distribution_rules WHERE user_id=? AND category_type=?", conn, params=(uid, cat_type))
+    finally: conn.close()
+
+# --- ACTUALIZAR PREFERENCIA DE CUENTA EN TABLAS EXISTENTES ---
+
+def update_item_target_account(table_name, item_id, account_id):
+    """Guarda la cuenta destino para un costo fijo o meta de ahorro."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        # table_name debe ser 'fixed_costs' o 'savings_goals' (validado por lógica interna)
+        if table_name not in ['fixed_costs', 'savings_goals']: return False
+        
+        query = f"UPDATE {table_name} SET target_account_id = ? WHERE id = ? AND user_id = ?"
+        conn.execute(query, (account_id, item_id, uid))
+        conn.commit()
+        return True
+    except: return False
+    finally: conn.close()
+
+
+# --- LA FUNCIÓN MAESTRA: DISTRIBUIR ---
+
+def execute_distribution_process(income_total, source_account_id, distribution_data):
+    """
+    Ejecuta el reparto masivo.
+    distribution_data: Lista de dicts { 'type': 'FC'/'SV'/'INV'/'GF', 'id': db_id, 'amount': $$, 'target_acc': acc_id, 'name': str }
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    uid = get_uid()
+    date_val = date.today().strftime('%Y-%m-%d')
+    
+    try:
+        # 1. Validar Fondos en Origen
+        total_needed = sum(d['amount'] for d in distribution_data)
+        has_funds, msg = _check_sufficient_funds(cursor, source_account_id, total_needed, uid)
+        if not has_funds: return False, msg
+
+        logs = []
+
+        for item in distribution_data:
+            amount = item['amount']
+            if amount <= 0: continue
+            
+            target_acc = item.get('target_acc')
+            name = item['name']
+            itype = item['type']
+            iid = item['id']
+
+            # A. TRANSFERENCIA DE DINERO (Si hay cuenta destino y es diferente a origen)
+            if target_acc and str(target_acc) != str(source_account_id):
+                # Usamos la lógica de transferencia manual pero paso a paso para que sea atómico
+                # Retiro Origen
+                cursor.execute("""
+                    INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
+                    VALUES (?, ?, ?, ?, 'Transferencia', 'Expense', ?, 'Reparto Ingresos')
+                """, (uid, date_val, f"Reparto: {name}", amount, source_account_id))
+                _adjust_account_balance(cursor, source_account_id, amount, 'Expense', False, uid)
+                
+                # Ingreso Destino
+                cursor.execute("""
+                    INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
+                    VALUES (?, ?, ?, ?, 'Transferencia', 'Income', ?, 'Reparto Ingresos')
+                """, (uid, date_val, f"Recibido: {name}", amount, target_acc))
+                _adjust_account_balance(cursor, target_acc, amount, 'Income', False, uid)
+            
+            elif not target_acc:
+                # Si no hay cuenta destino, solo se descuenta del origen como Gasto (Ya se pagó o salió)
+                # Opcional: Depende de como quiera el usuario. Asumiremos que si no hay destino, se queda en la cuenta origen
+                # pero se marca "lógicamente". 
+                pass 
+
+            # B. ACTUALIZACIÓN LÓGICA (Apartados)
+            if itype == 'FC': # Fixed Costs
+                # Usamos COALESCE(current_allocation, 0) para evitar errores si el campo es NULL
+                cursor.execute("""
+                    UPDATE fixed_costs 
+                    SET current_allocation = COALESCE(current_allocation, 0) + ? 
+                    WHERE id=? AND user_id=?
+                """, (amount, iid, uid))
+                
+            elif itype == 'SV': # Savings
+                cursor.execute("""
+                    UPDATE savings_goals 
+                    SET current_saved = COALESCE(current_saved, 0) + ? 
+                    WHERE id=? AND user_id=?
+                """, (amount, iid, uid))
+            
+            logs.append(f"{name}: ${amount:,.2f}")
+
+        conn.commit()
+        return True, f"Reparto exitoso de ${total_needed:,.2f}"
+        
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error en distribución: {e}"
+    finally:
+        conn.close()
+
+# --- EN backend/data_manager.py ---
+
+# 1. Función auxiliar para verificar/crear la subcategoría
+def _ensure_subcategory_exists(category_name, subcategory_name, user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        # Verificar si existe la subcategoría para ese usuario y categoría padre
+        cursor.execute("""
+            SELECT id FROM subcategories 
+            WHERE user_id = ? AND name = ? AND parent_category = ?
+        """, (user_id, subcategory_name, category_name))
+        
+        if not cursor.fetchone():
+            # Si no existe, crearla
+            cursor.execute("""
+                INSERT INTO subcategories (user_id, name, parent_category) 
+                VALUES (?, ?, ?)
+            """, (user_id, subcategory_name, category_name))
+            conn.commit()
+    except Exception as e:
+        print(f"Error asegurando subcategoría: {e}")
+    finally:
+        conn.close()
+
+# 2. Función Principal: Pagar Costo Fijo
+def pay_fixed_cost_balance(fc_id, amount, account_id):
+    """
+    Registra el pago de un Costo Fijo:
+    1. Crea transacción de Gasto (Cat: Costos Fijos, Subcat: Nombre del FC).
+    2. Descuenta el monto pagado del 'current_allocation' del Costo Fijo.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    uid = get_uid()
+    date_val = date.today().strftime('%Y-%m-%d')
+    
+    try:
+        # A. Obtener datos del Costo Fijo
+        cursor.execute("SELECT name, current_allocation FROM fixed_costs WHERE id = ? AND user_id = ?", (fc_id, uid))
+        fc = cursor.fetchone()
+        if not fc: return False, "Costo fijo no encontrado."
+        
+        fc_name = fc[0]
+        
+        # B. Validar Fondos en la cuenta real
+        has_funds, msg = _check_sufficient_funds(cursor, account_id, amount, uid)
+        if not has_funds: return False, msg
+
+        # C. Asegurar que exista la Subcategoría (Nombre del FC) dentro de 'Costos Fijos'
+        # Nota: Hacemos esto fuera de la transacción principal o dentro, aquí usamos la lógica auxiliar
+        _ensure_subcategory_exists("Costos Fijos", fc_name, uid)
+
+        # D. Registrar la Transacción (Gasto Real)
+        cursor.execute("""
+            INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
+            VALUES (?, ?, ?, ?, 'Costos Fijos', 'Expense', ?, ?)
+        """, (uid, date_val, f"Pago: {fc_name}", amount, account_id, fc_name))
+        
+        # E. Actualizar Saldo Real de la Cuenta Bancaria
+        _adjust_account_balance(cursor, account_id, amount, 'Expense', is_reversal=False, user_id=uid)
+        
+        # F. Descontar del "Apartado Virtual" (Allocation) del Costo Fijo
+        # Usamos MAX(0, ...) para que no quede negativo si pagas de más por alguna razón, 
+        # o puedes quitar el MAX si permites saldos negativos.
+        cursor.execute("""
+            UPDATE fixed_costs 
+            SET current_allocation = current_allocation - ? 
+            WHERE id = ? AND user_id = ?
+        """, (amount, fc_id, uid))
+
+        conn.commit()
+        return True, f"Pago de {fc_name} registrado exitosamente."
+        
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error al pagar costo fijo: {str(e)}"
+    finally:
+        conn.close()
+
+# --- EN backend/data_manager.py ---
+
+def process_savings_withdrawal(goal_id, amount, account_id, is_transfer=False, 
+                               dest_acc_id=None, category=None, subcategory=None, note=None):
+    """
+    Procesa el retiro de una meta de ahorro.
+    1. Si es Transferencia: Mueve saldo entre cuentas.
+    2. Si es Gasto: Crea una transacción de gasto con categoría/subcategoría.
+    3. En ambos casos: Descuenta el monto de 'current_saved' en la meta.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    uid = get_uid()
+    date_val = date.today().strftime('%Y-%m-%d')
+    
+    try:
+        # A. Obtener info de la meta
+        cursor.execute("SELECT name, current_saved FROM savings_goals WHERE id = ? AND user_id = ?", (goal_id, uid))
+        res = cursor.fetchone()
+        if not res: return False, "Meta no encontrada."
+        goal_name, current_saved = res
+        
+        # Validación básica (opcional, se puede permitir quedar en negativo si se desea)
+        # if amount > current_saved: return False, "El monto excede lo ahorrado."
+
+        # B. PROCESAR EL MOVIMIENTO DE DINERO
+        if is_transfer:
+            # Opción 1: Transferencia entre cuentas
+            if not dest_acc_id: return False, "Falta cuenta destino."
+            
+            # Reutilizamos la lógica de transferencia (pero paso a paso para mantener la transacción abierta)
+            # Retiro Origen
+            cursor.execute("""
+                INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
+                VALUES (?, ?, ?, ?, 'Transferencia', 'Expense', ?, 'Retiro de Ahorro')
+            """, (uid, date_val, f"Retiro Meta: {goal_name}", amount, account_id))
+            _adjust_account_balance(cursor, account_id, amount, 'Expense', False, uid)
+            
+            # Ingreso Destino
+            cursor.execute("""
+                INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
+                VALUES (?, ?, ?, ?, 'Transferencia', 'Income', ?, 'Retiro de Ahorro')
+            """, (uid, date_val, f"Ingreso Meta: {goal_name}", amount, dest_acc_id))
+            _adjust_account_balance(cursor, dest_acc_id, amount, 'Income', False, uid)
+            
+            action_msg = "Transferencia realizada"
+
+        else:
+            # Opción 2: Gasto (Compra real)
+            if not category: return False, "Falta categoría."
+            
+            # Verificar subcategoría si se seleccionó una
+            if subcategory:
+                _ensure_subcategory_exists(category, subcategory, uid)
+            
+            trans_name = f"{goal_name}: {note}" if note else f"Gasto de Meta: {goal_name}"
+            
+            cursor.execute("""
+                INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
+                VALUES (?, ?, ?, ?, ?, 'Expense', ?, ?)
+            """, (uid, date_val, trans_name, amount, category, account_id, subcategory))
+            
+            _adjust_account_balance(cursor, account_id, amount, 'Expense', False, uid)
+            action_msg = "Gasto registrado"
+
+        # C. ACTUALIZAR LA META (Restar lo gastado/movido)
+        # Usamos MAX(0, ...) para evitar negativos si prefieres, o lo dejas libre.
+        cursor.execute("""
+            UPDATE savings_goals 
+            SET current_saved = current_saved - ?
+            WHERE id = ? AND user_id = ?
+        """, (amount, goal_id, uid))
+        
+        conn.commit()
+        return True, f"{action_msg} y meta actualizada."
+
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error: {str(e)}"
     finally:
         conn.close()

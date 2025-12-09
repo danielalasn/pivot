@@ -17,7 +17,18 @@ from . import investments_transactions
 # ------------------------------------------------------------------------------
 # 1. FUNCIONES AUXILIARES (Definidas antes del Layout)
 # ------------------------------------------------------------------------------
-
+def smart_format(val):
+    if pd.isna(val) or val == 0:
+        return "0"
+    if float(val).is_integer():
+        return f"{int(val):,}"
+    
+    val_abs = abs(val)
+    if val_abs >= 0.01:
+        return f"{val:,.2f}"
+    else:
+        # Redondeo a 5 decimales y limpieza de ceros
+        return f"{val:.5f}".rstrip('0').rstrip('.')
 # --- FUNCIÓN AUXILIAR 1: FIGURA INICIAL ---
 def get_initial_empty_fig():
     """Genera una figura transparente y vacía para evitar el flash blanco al cargar."""
@@ -329,20 +340,13 @@ layout = dbc.Container([
 def fetch_and_cache_assets(pathname, signal, refresh_clicks):
     trigger = ctx.triggered_id
     
-    # DEBUG 1: Ver si el callback se dispara
-    print(f"--- DEBUG 1: Fetch Callback disparado por: {trigger} | Path: {pathname} ---")
-
     force = False
     if trigger == "btn-refresh-investments" or trigger == "asset-update-signal":
-        force = True
+        force = False
         
     if pathname == "/inversiones":
         # Traemos los datos
         stocks_list = dm.get_stocks_data(force_refresh=force)
-        
-        # DEBUG 2: Ver qué devolvió la base de datos
-        print(f"--- DEBUG 2: Datos crudos desde DB: {stocks_list} ---")
-        
         timestamp = dm.get_data_timestamp()
         label_text = f"Actualizado: {timestamp}"
         
@@ -365,7 +369,6 @@ def toggle_add_modal(open_n, cancel_n, signal, is_open):
     return not is_open, "" 
 
 # 2. Guardar Posición (CON VALIDACIÓN DE TICKER y TOTAL INVESTMENT)
-# 2. Guardar Posición (CON DEBUG)
 @callback(
     [Output("asset-update-signal", "data"),
      Output("asset-modal-msg", "children", allow_duplicate=True)],
@@ -377,16 +380,11 @@ def toggle_add_modal(open_n, cancel_n, signal, is_open):
     prevent_initial_call=True
 )
 def save_asset(n_clicks, ticker, shares, total_investment, signal):
-    # DEBUG A: Ver si el botón funciona
-    print(f"--- DEBUG SAVE: Botón presionado. Datos: {ticker}, {shares}, {total_investment} ---")
-
     if not all([ticker, shares, total_investment]):
-        print("--- DEBUG SAVE ERROR: Faltan datos ---")
         return no_update, html.Span("Faltan datos obligatorios.", className="text-danger")
     
-    # DEBUG B: Ver validación de ticker
     es_valido = dm.is_ticker_valid(ticker)
-    print(f"--- DEBUG SAVE: Ticker {ticker} válido? {es_valido} ---")
+
 
     if not es_valido:
         return no_update, html.Span("Error: El Ticker no existe o no es soportado.", className="text-danger")
@@ -403,10 +401,8 @@ def save_asset(n_clicks, ticker, shares, total_investment, signal):
     except ValueError:
         return no_update, html.Span("Datos numéricos inválidos.", className="text-danger")
 
-    # DEBUG C: Llamando al backend real
-    print("--- DEBUG SAVE: Llamando a dm.add_stock... ---")
     success, msg = dm.add_stock(ticker, shares_f, total_investment_f)
-    print(f"--- DEBUG SAVE RESULTADO: Success={success}, Msg={msg} ---")
+
     
     if success:
         return (signal + 1), html.Span(msg, className="text-success")
@@ -605,18 +601,14 @@ def render_portfolio_summary(json_assets):
      Input("assets-display-tabs", "active_tab")] 
 )
 def render_asset_cards(json_assets, sort_value, active_tab):
-    # DEBUG 3: Ver qué llega al renderizador
-    print(f"--- DEBUG 3: Renderizando Cards. Tab Activa: {active_tab} ---")
-
+  
     # 1. Validar si el JSON es válido
     if not json_assets or json_assets == '{}':
-        print("--- DEBUG 3A: Cache vacío o nulo ---")
         return html.Div("Cargando datos...", className="text-muted text-center")
 
     stocks = json.loads(json_assets)
     
     if not stocks:
-        print("--- DEBUG 3B: Lista de stocks vacía [] ---")
         return html.Div([
             html.I(className="bi bi-inbox fs-1 d-block mb-3"),
             "No tienes posiciones de inversión registradas.",
@@ -627,12 +619,9 @@ def render_asset_cards(json_assets, sort_value, active_tab):
     # 3. Crear DataFrame
     df_stocks = pd.DataFrame(stocks)
     
-    # DEBUG 4: Ver tipos de activos detectados antes de filtrar
-    if 'asset_type' in df_stocks.columns:
-        print(f"--- DEBUG 4: Tipos encontrados en columna asset_type: {df_stocks['asset_type'].unique()} ---")
-    else:
-        print("--- DEBUG 4 ERROR: No existe la columna 'asset_type' en el DataFrame ---")
+    if 'asset_type' not in df_stocks.columns:
         return html.Div("Error estructural: Falta asset_type", className="text-danger")
+        
 
     # 4. Mapeo de Tipos de Activos
     # ATENCIÓN: He añadido .strip() y .upper() para hacer el filtro más robusto
@@ -652,9 +641,6 @@ def render_asset_cards(json_assets, sort_value, active_tab):
         df_stocks = df_stocks[df_stocks['Display_Type'] == 'CRYPTO_FOREX']
     elif active_tab == 'tab-other':
         df_stocks = df_stocks[df_stocks['Display_Type'] == 'OTHER']
-    
-    # DEBUG 5: Resultado del filtro
-    print(f"--- DEBUG 5: Filas antes: {rows_before} -> Filas después de filtrar por {active_tab}: {len(df_stocks)} ---")
     
     if df_stocks.empty:
         return html.Div(f"No hay activos en la categoría {active_tab}.", className="text-muted text-center p-4")
@@ -695,7 +681,7 @@ def render_asset_cards(json_assets, sort_value, active_tab):
                         html.Small(display_name, className="text-muted text-uppercase fw-bold", style={"fontSize": "0.75rem"}),
                         
                         dbc.Row([
-                            dbc.Col(html.P(f"Unidades: {s['shares']:,.2f}", className="text-white fw-bold mt-1 mb-0", style={"fontSize": "0.75rem"}), width="auto"),
+                            dbc.Col(html.P(f"Unidades: {smart_format(s['shares'])}", className="text-white fw-bold mt-1 mb-0", style={"fontSize": "0.75rem"}), width="auto"),
                             dbc.Col(html.P(f"@{s['avg_price']:,.2f}", className="text-muted fw-bold mt-1 mb-0", style={"fontSize": "0.75rem"}), width="auto", className="ms-auto")
                         ], className="g-0 justify-content-between mb-2")
                     ], className="mb-3"), 
@@ -709,20 +695,24 @@ def render_asset_cards(json_assets, sort_value, active_tab):
                     html.Small("Rendimiento:", className="text-muted fw-bold mb-2 d-block"),
 
                     dbc.Row([
-                        dbc.Col("Hoy:", width=4, className="text-muted small"),
+                        # Cambiado width=4 a width=3 para dar más espacio a los números
+                        dbc.Col("Hoy:", width=3, className="text-muted small"),
                         dbc.Col([
                             html.Span(f"{day_sign}${day_gain_usd:,.2f}", className=f"fw-bold {day_color} me-2"),
+                            # Eliminado el '+' del formato f-string porque day_sign ya lo trae
                             html.Small(f"({day_sign}{s['day_change_pct']:.2f}%)", className=f"{day_color}")
-                        ], width=8, className="text-end")
-                    ], className="mb-1"),
+                        ], width=9, className="text-end") # Cambiado width=8 a width=9
+                    ], className="mb-1 g-0"),
 
                     dbc.Row([
-                        dbc.Col("Total:", width=4, className="text-muted small"),
+                        # Cambiado width=4 a width=3
+                        dbc.Col("Total:", width=3, className="text-muted small"),
                         dbc.Col([
                             html.Span(f"{total_sign}${s['total_gain']:,.2f}", className=f"fw-bold {total_color} me-2"),
-                            html.Small(f"({total_sign}{s['total_gain_pct']:+.2f}%)", className=f"{total_color}")
-                        ], width=8, className="text-end")
-                    ]),
+                            # Eliminado el '+' del formato f-string porque total_sign ya lo trae
+                            html.Small(f"({total_sign}{s['total_gain_pct']:.2f}%)", className=f"{total_color}")
+                        ], width=9, className="text-end") # Cambiado width=8 a width=9
+                    ], className="g-0"),
                 ]),
                 html.Div(id={'type': 'stock-card', 'index': s['id']}, className="stretched-link") 
             ], className=f"data-card h-100 zoom-on-hover shadow-sm {card_bg_class}", style={"cursor": "pointer"}),
@@ -812,7 +802,7 @@ def handle_card_click(n_clicks, delete, open_sell, open_buy, open_edit, viewing_
                     ], className="mb-2"),
                     html.Hr(className="my-2"),
                     dbc.Row([
-                        dbc.Col([html.B("Unidades:"), f" {data['shares']:,.2f}"], width=6, className="small"), 
+                        dbc.Col([html.B("Unidades:"), f" {smart_format(data['shares'])}"], width=6, className="small"),
                         dbc.Col([html.B("Costo Prom:"), f" ${data['avg_price']:,.2f}"], width=6, className="small text-end"),
                     ])
                 ])

@@ -12,6 +12,29 @@ import plotly.graph_objects as go # Necesario para create_empty_bar
 from io import StringIO
 
 # --- FUNCIONES AUXILIARES ---
+def smart_format(val):
+    if pd.isna(val) or val == 0:
+        return "0"
+    
+    # 1. Enteros (20.0 -> "20")
+    if float(val).is_integer():
+        return f"{int(val):,}"
+        
+    val_abs = abs(val)
+    
+    # 2. Números estándar (>= 0.01) -> 2 decimales (10.345 -> "10.35")
+    if val_abs >= 0.01:
+        return f"{val:,.2f}"
+    
+    # 3. Crypto/Pequeños (< 0.01) -> Redondear a 5 decimales
+    else:
+        # Usamos :.5f para que Python redondee matemáticamente (0.000239 -> 0.00024)
+        formatted = f"{val:.5f}"
+        
+        # Limpiamos ceros finales por si acaso (0.00020 -> 0.0002)
+        # pero mantenemos el redondeo que pediste.
+        return formatted.rstrip('0').rstrip('.')
+
 
 def create_empty_bar(title, height=350):
     """Genera una figura vacía con un mensaje central (Reimplementado localmente por seguridad)."""
@@ -108,6 +131,12 @@ def render_transaction_history_table(json_history):
     try:
         # Intentamos convertir el JSON a DataFrame
         df_history = pd.read_json(StringIO(json_history), orient='split')
+        
+        # --- CORRECCIÓN DE FECHA ---
+        # Forzamos que la columna 'date' sea solo texto YYYY-MM-DD
+        if 'date' in df_history.columns:
+            df_history['date'] = pd.to_datetime(df_history['date']).dt.strftime('%Y-%m-%d') # <--- NUEVA LÍNEA
+
     except ValueError:
         # Si falla (por cualquier motivo de formato), mostramos cargando en vez de romper la app
         return html.Div("Cargando datos...", className="text-muted text-center")
@@ -120,13 +149,18 @@ def render_transaction_history_table(json_history):
         'date': 'Fecha', 
         'ticker': 'Ticker', 
         'type': 'Tipo', 
-        'shares': 'Cant. Unidades', 
+        # 'shares': 'Cant. Unidades', 
         'price': 'Precio Ejecución', 
         'total_transaction': 'Total Transacción',
         'realized_pl': 'P/L',
         'avg_cost_at_trade': 'Costo Promedio'
     })
     
+    if 'shares' in df_history.columns:
+        df_history['Cant. Unidades'] = df_history['shares'].apply(smart_format)
+    else:
+         df_history['Cant. Unidades'] = "0.00"
+
     df_history['Tipo'] = df_history['Tipo'].apply(lambda x: 'Venta' if x == 'SELL' else 'Compra')
     df_history['Acción'] = "✖" 
 
@@ -135,7 +169,7 @@ def render_transaction_history_table(json_history):
         {"name": "Tipo", "id": "Tipo"},
         {"name": "Ticker", "id": "Ticker"},
         {"name": "Precio Ejecución", "id": "Precio Ejecución", "type": "numeric", "format": {"specifier": "$,.2f"}},
-        {"name": "Cant. Unidades", "id": "Cant. Unidades", "type": "numeric", "format": {"specifier": ",.2f"}},
+        {"name": "Cant. Unidades", "id": "Cant. Unidades", "type": "text"},
         {"name": "Total Transacción", "id": "Total Transacción", "type": "numeric", "format": {"specifier": "$,.2f"}},
         {"name": "P/L", "id": "P/L", "type": "numeric", "format": {"specifier": "$,.2f"}},
         {"name": "Costo Promedio", "id": "Costo Promedio", "type": "numeric", "format": {"specifier": "$,.2f"}},
@@ -155,7 +189,14 @@ def render_transaction_history_table(json_history):
         data=df_history.to_dict('records'),
         columns=columns,
         style_header={'backgroundColor': '#333', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'},
-        style_cell={'textAlign': 'center', 'border': '1px solid #444', 'padding': '10px'},
+        style_cell={
+            'textAlign': 'center', 
+            'border': '1px solid #444', 
+            'padding': '10px',
+            'minWidth': '120px', 'width': '120px', 'maxWidth': '180px', # Opcional: define anchos mínimos
+            'whiteSpace': 'normal'
+        },
+        style_table={'overflowX': 'auto'},
         page_action='native',
         page_size=10,
         style_data_conditional=style_data_conditional,

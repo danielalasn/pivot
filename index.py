@@ -7,9 +7,10 @@ from flask_login import current_user, logout_user
 # Importar la app y páginas
 from app import app, server
 # 🚨 CAMBIO 1: Agregamos 'register' a la lista de importaciones iniciales
-from pages import dashboard, transactions, debts, login, register 
+from pages import dashboard, transactions, debts, login, register, admin # <--- AGREGA distribution # <--- AGREGA admin
 from pages.accounts import accounts 
 from pages.investments import investments 
+from pages.distribution import distribution
 
 # ------------------------------------------------------------------------------
 # 1. CONTENIDO DEL SIDEBAR (Solo se mostrará si hay login)
@@ -18,6 +19,7 @@ nav_links = [
     dbc.NavLink([html.I(className="bi bi-house me-2"), "Dashboard"], href="/", active="exact"),
     dbc.NavLink([html.I(className="bi bi-receipt me-2"), "Transacciones"], href="/transacciones", active="exact"),
     dbc.NavLink([html.I(className="bi bi-wallet2 me-2"), "Cuentas"], href="/cuentas", active="exact"),
+    dbc.NavLink([html.I(className="bi bi-pie-chart me-2"), "Distribución"], href="/distribucion", active="exact"),
     dbc.NavLink([html.I(className="bi bi-arrow-left-right me-2"), "Deudas"], href="/deudas", active="exact"), 
     dbc.NavLink([html.I(className="bi bi-graph-up me-2"), "Inversiones"], href="/inversiones", active="exact"),
     
@@ -28,7 +30,8 @@ nav_links = [
 sidebar = dbc.Offcanvas(
     html.Div([
         html.H2("Pívot", className="offcanvas-header-title-custom mb-4"),
-        dbc.Nav(nav_links, vertical=True, pills=True),
+        # IMPORTANTE: Agregamos id="sidebar-nav-links" para actualizarlo vía callback
+        dbc.Nav(id="sidebar-nav-links", vertical=True, pills=True), 
     ], className="h-100 d-flex flex-column"),
     id="offcanvas-sidebar",
     is_open=False,
@@ -75,6 +78,34 @@ app.layout = html.Div([
 # ------------------------------------------------------------------------------
 # CALLBACKS DE NAVEGACIÓN Y SEGURIDAD
 # ------------------------------------------------------------------------------
+@app.callback(
+    Output("sidebar-nav-links", "children"),
+    Input("url", "pathname")
+)
+def update_sidebar_links(pathname):
+    # Definimos los links base para todos los usuarios logueados
+    links = [
+        dbc.NavLink([html.I(className="bi bi-house me-2"), "Dashboard"], href="/", active="exact"),
+        dbc.NavLink([html.I(className="bi bi-receipt me-2"), "Transacciones"], href="/transacciones", active="exact"),
+        dbc.NavLink([html.I(className="bi bi-wallet2 me-2"), "Cuentas"], href="/cuentas", active="exact"),
+        dbc.NavLink([html.I(className="bi bi-pie-chart me-2"), "Distribución"], href="/distribucion", active="exact"),
+        dbc.NavLink([html.I(className="bi bi-arrow-left-right me-2"), "Deudas"], href="/deudas", active="exact"), 
+        dbc.NavLink([html.I(className="bi bi-graph-up me-2"), "Inversiones"], href="/inversiones", active="exact"),
+    ]
+    
+    # Si es ADMIN, agregamos el link especial
+    if current_user.is_authenticated and current_user.username == 'admin':
+        links.append(
+            dbc.NavLink([html.I(className="bi bi-shield-lock me-2 text-warning"), "Admin Panel"], href="/admin", active="exact")
+        )
+        
+    # Agregamos el botón de salir al final
+    links.append(
+        dbc.NavLink([html.I(className="bi bi-box-arrow-left me-2 text-danger"), "Cerrar Sesión"], href="/logout", active="exact", className="mt-4 border-top border-secondary pt-3")
+    )
+    
+    return links
+
 
 @app.callback(
     Output("page-content", "children"),
@@ -105,10 +136,14 @@ def display_page(pathname):
             return transactions.layout
         elif pathname == "/cuentas":
             return accounts.layout
+        elif pathname == "/distribucion":
+            return distribution.layout
         elif pathname == "/deudas":
             return debts.layout
         elif pathname == "/inversiones":
             return investments.layout
+        elif pathname == "/admin":
+            return admin.layout
         else:
             return html.Div([html.H1("404"), html.P("Página no encontrada")], className="p-5 text-center")
     
@@ -122,7 +157,6 @@ def display_page(pathname):
     Input("url", "pathname")
 )
 def toggle_navbar_visibility(pathname):
-    # 🚨 CAMBIO 3: Añadimos "/register" a la lista de páginas sin menú
     if pathname == "/login" or pathname == "/register" or pathname == "/logout" or not current_user.is_authenticated:
         return {"display": "none"}, "main-content p-0"
     

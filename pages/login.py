@@ -3,6 +3,7 @@ import dash
 from dash import html, dcc, callback, Input, Output, State
 import dash_bootstrap_components as dbc
 from flask_login import login_user, current_user
+import backend.data_manager as dm
 from backend.models import verify_user
 
 # Layout de la página de Login
@@ -67,6 +68,7 @@ def login_process(n_clicks, username, password):
     
     if user:
         login_user(user) # Esto crea la sesión segura en Flask
+        dm.update_last_login(user.id)
         return "/", ""   # Redirige al Dashboard
     else:
         return dash.no_update, html.Span("Usuario o contraseña incorrectos.", className="text-danger fw-bold")
