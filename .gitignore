@@ -1,0 +1,27 @@
+# ==================================
+# IGNORAR ARCHIVOS DE PYTHON/ENTORNO
+# ==================================
+# Entorno virtual
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# IDEs (Visual Studio Code, PyCharm)
+.vscode/
+.idea/
+
+# ==================================
+# IGNORAR ARCHIVOS SENSIBLES/SECRETO
+# ==================================
+# 🚨 1. Variables de Entorno
+.env
+*.env
+
+# 🚨 2. BASE DE DATOS LOCAL
+# La base de datos local SQLite NUNCA debe subirse
+data/pivot.db
+*.sqlite
+*.db
+*.log
+tmp/
