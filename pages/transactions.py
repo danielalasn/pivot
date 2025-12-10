@@ -11,12 +11,13 @@ import pandas as pd
 
 # LISTA FIJA DE CATEGORÍAS MACRO
 MAIN_CATEGORIES = [
+    {'label': 'Libres', 'value': 'Libres'},
     {'label': 'Costos Fijos', 'value': 'Costos Fijos'},
-    {'label': 'Libres (Guilt Free)', 'value': 'Libres'},
     {'label': 'Inversión', 'value': 'Inversion'},
     {'label': 'Ahorro', 'value': 'Ahorro'},
-    {'label': 'Deudas/Cobros', 'value': 'Deudas/Cobros'},
-    {'label': 'Ingresos', 'value': 'Ingresos'} 
+    {'label': 'Deuda/Cobro', 'value': 'Deuda/Cobro'},
+    {'label': 'Salario', 'value': 'Salario'},
+    # 'Transferencia' se oculta visualmente pero existe en sistema
 ]
 
 # --- MODAL 0: CREAR NUEVA CATEGORÍA PRINCIPAL ---
@@ -273,7 +274,7 @@ def generate_table(dataframe):
     else:
         # 1. ASEGURAR ORDEN CRONOLÓGICO (FECHA + HORA)
         # Convertimos a datetime real para que el ordenamiento respete la hora
-        dataframe['date'] = pd.to_datetime(dataframe['date'])
+        dataframe['date'] = pd.to_datetime(dataframe['date'], format='mixed')
         
         # Ordenamos descendente (Lo más reciente arriba)
         dataframe = dataframe.sort_values(by='date', ascending=False)
@@ -476,7 +477,7 @@ def update_subcats_modal(parent, sig):
      State("input-subcategory", "value"),
      State("input-account-dest-dd", "value")] # <--- NUEVO ESTADO: Destino
 )
-def add_transaction_callback(n_clicks, date_val, time_val, name, amount, category, t_type, acc_id, subcat, dest_acc_id): # <--- Agrega time_val
+def add_transaction_callback(n_clicks, date_val, time_val, name, amount, category, t_type, acc_id, subcat, dest_acc_id):
     df = dm.get_transactions_df()
     if not n_clicks: return "", generate_table(df), no_update, no_update
 
@@ -486,7 +487,7 @@ def add_transaction_callback(n_clicks, date_val, time_val, name, amount, categor
     
     # --- COMBINAR FECHA Y HORA ---
     final_time = time_val if time_val else "00:00"
-    full_date_str = f"{date_val} {final_time}"
+    full_date_str = f"{date_val} {final_time}" # <--- ¡Aquí creaste la variable correcta!
 
     try: amt = float(amount)
     except: return html.Span("Monto inválido", className="text-danger"), generate_table(df), no_update, no_update
@@ -502,15 +503,14 @@ def add_transaction_callback(n_clicks, date_val, time_val, name, amount, categor
              return html.Span("Origen y destino son iguales.", className="text-danger"), generate_table(df), no_update, no_update
 
         # Llamada a función backend de transferencia
-        success, msg = dm.add_transfer(date_val, final_name, amt, acc_id, dest_acc_id)
+        success, msg = dm.add_transfer(full_date_str, final_name, amt, acc_id, dest_acc_id)
 
     else:
         # CASO: INGRESO O GASTO NORMAL
         if not category:
             return html.Span("Falta la categoría.", className="text-danger"), generate_table(df), no_update, no_update
         
-        success, msg = dm.add_transaction(date_val, final_name, amt, category, t_type, acc_id, subcat)
-    
+        success, msg = dm.add_transaction(full_date_str, final_name, amt, category, t_type, acc_id, subcat)
     # RESPUESTA
     if success:
         df_new = dm.get_transactions_df()

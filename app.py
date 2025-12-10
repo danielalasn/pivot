@@ -28,8 +28,15 @@ server = app.server
 # --- CONFIGURACIÓN DE SEGURIDAD (MEJORADA) ---
 # 3. Leemos desde el .env. 
 # El segundo parámetro es un "fallback" por si no encuentra la variable en el .env
+secret_key = os.getenv("FLASK_SECRET_KEY")
+
+# 2. Validación CRÍTICA: Si no hay clave, detener la aplicación
+if not secret_key:
+    raise RuntimeError("ERROR CRÍTICO: No se encontró 'FLASK_SECRET_KEY' en el archivo .env. Por seguridad, la app no iniciará.")
+
+# 3. Configurar el servidor
 server.config.update(
-    SECRET_KEY=os.getenv("FLASK_SECRET_KEY", "clave_default_dev_12345"), 
+    SECRET_KEY=secret_key,
     REMEMBER_COOKIE_DURATION=timedelta(days=7)
 )
 

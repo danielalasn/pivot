@@ -243,7 +243,11 @@ layout = dbc.Container([
                                 title="Actualizar precios ahora"
                             ),
                             # ETIQUETA DE FECHA (Se actualiza con la DB)
-                            html.Small(id="last-updated-inv-label", className="text-muted ms-2 small fst-italic")
+                            html.Small(id="last-updated-inv-label", className="text-muted ms-2 small fst-italic"),
+                            
+                            # 🚨 NUEVO: Div invisible para forzar el spinner
+                            html.Div(id="dummy-spinner-target", style={"display": "none"})
+                            
                         ], className="d-flex align-items-center")
                     ]
                 )
@@ -329,31 +333,54 @@ layout = dbc.Container([
 # 0. Callback Inicial/Actualización: Llama a la API y guarda el DF en el Store.
 # 0. Callback Inicial/Actualización: Llama a la API y guarda el DF en el Store.
 # 0. Callback Inicial/Actualización: Llama a la API y guarda el DF en el Store.
+# 0. Callback Inicial/Actualización: Solo carga datos (Lectura)
 @callback(
     [Output('assets-data-cache', 'data'),
      Output('last-updated-inv-label', 'children')], 
     [Input('url', 'pathname'),
-     Input('asset-update-signal', 'data'),
-     Input('btn-refresh-investments', 'n_clicks')], 
+     Input('asset-update-signal', 'data')], # <--- YA NO ESTÁ EL BOTÓN AQUÍ
     prevent_initial_call=False
 )
-def fetch_and_cache_assets(pathname, signal, refresh_clicks):
-    trigger = ctx.triggered_id
-    
-    force = False
-    if trigger == "btn-refresh-investments" or trigger == "asset-update-signal":
-        force = False
-        
+def fetch_and_cache_assets(pathname, signal):
     if pathname == "/inversiones":
-        # Traemos los datos
-        stocks_list = dm.get_stocks_data(force_refresh=force)
+        # Traemos los datos (Sin forzar refresh aquí, solo lectura de DB)
+        stocks_list = dm.get_stocks_data(force_refresh=False)
         timestamp = dm.get_data_timestamp()
         label_text = f"Actualizado: {timestamp}"
-        
         return json.dumps(stocks_list), label_text
         
     return no_update, no_update
+
+# 0-B. Callback Nuevo: Acción Manual de Refrescar (Escritura + Notificación)
+# 0-B. Callback Nuevo: Acción Manual de Refrescar
+@callback(
+    [Output("asset-update-signal", "data", allow_duplicate=True),
+     Output("asset-toast", "is_open", allow_duplicate=True),
+     Output("asset-toast", "children", allow_duplicate=True),
+     Output("asset-toast", "icon", allow_duplicate=True),
+     # 🚨 NUEVO OUTPUT: Apuntamos al div invisible dentro del spinner
+     Output("dummy-spinner-target", "children")], 
+    Input("btn-refresh-investments", "n_clicks"),
+    State("asset-update-signal", "data"),
+    prevent_initial_call=True
+)
+def manual_refresh_handler(n_clicks, signal):
+    # Ajustamos el retorno de no_update para que coincida con la cantidad de outputs (5)
+    if not n_clicks: return no_update, no_update, no_update, no_update, no_update
+    
+    # 1. Llamar a la función robusta del backend (Aquí es donde tarda y gira la rueda)
+    success, msg = dm.manual_price_refresh()
+    
+    # 2. Incrementar señal
+    new_signal = (signal or 0) + 1
+    
+    # 🚨 NOTA: Agregamos "" al final de los return para llenar el dummy-spinner-target
+    if success:
+        return new_signal, *ui_helpers.mensaje_alerta_exito("success", msg), ""
+    else:
+        return new_signal, *ui_helpers.mensaje_alerta_exito("danger", msg), ""
 # 1. Abrir/Cerrar Modal Agregar
+
 @callback(
     [Output("add-asset-modal", "is_open"),
      Output("asset-modal-msg", "children", allow_duplicate=True)],

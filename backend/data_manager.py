@@ -437,40 +437,29 @@ def delete_installment(installment_id):
     except Exception as e: return False, str(e)
     finally: conn.close()
 # --- TRANSACCIONES Y ANALYTICS ---
-def get_dashboard_metrics(selected_month_str=None):
-    """
-    Calcula Ingresos y Gastos REALES (excluyendo transferencias y movimientos internos).
-    selected_month_str: Formato 'YYYY-MM'. Si es None, usa el mes actual.
-    """
-    df = get_transactions_df() # Esta ya filtra por usuario
-    if df.empty:
-        return 0.0, 0.0
+# backend/data_manager.py
 
-    # 1. Filtrar por fecha (Mes seleccionado)
+def get_dashboard_metrics(selected_month_str=None):
+    df = get_transactions_df()
+    if df.empty: return 0.0, 0.0
+
     if not selected_month_str:
         selected_month_str = date.today().strftime('%Y-%m')
     
-    # Aseguramos formato fecha
-    df['date'] = pd.to_datetime(df['date'])
+    df['date'] = pd.to_datetime(df['date'], format='mixed')
     df['Month'] = df['date'].dt.strftime('%Y-%m')
     df_month = df[df['Month'] == selected_month_str]
 
-    if df_month.empty:
-        return 0.0, 0.0
+    if df_month.empty: return 0.0, 0.0
 
-    # 2. EL FILTRO MÁGICO: Excluir categorías de movimiento interno
-    # Deben coincidir EXACTAMENTE con cómo las guardas en add_transfer
-    excluded_cats = ['Transferencia', 'Deudas/Cobros', 'Transferencia/Pago']
-    
-    # Filtramos el DataFrame para quitar esas categorías
+    # 🚨 CAMBIO: Usar lista dinámica
+    excluded_cats = get_excluded_categories_list()
     df_clean = df_month[~df_month['category'].isin(excluded_cats)]
 
-    # 3. Calcular totales
     total_income = df_clean[df_clean['type'] == 'Income']['amount'].sum()
     total_expense = df_clean[df_clean['type'] == 'Expense']['amount'].sum()
 
     return total_income, total_expense
-
 # backend/data_manager.py
 
 def _check_sufficient_funds(cursor, account_id, amount, user_id):
@@ -584,31 +573,36 @@ def get_net_worth():
 
 # backend/data_manager.py
 
+# backend/data_manager.py
+
 def get_monthly_summary():
-    """Flujo de caja mensual del usuario (FILTRADO PARA GRÁFICAS)."""
+    """Flujo de caja mensual del usuario (DINÁMICO)."""
     df = get_transactions_df()
     if df.empty: return pd.DataFrame()
     
-    # --- CORRECCIÓN: Filtro estricto para Análisis ---
-    # Excluimos movimientos que no son flujo de caja real
-    excluded_cats = ['Transferencia', 'Transferencia/Pago', 'Deudas/Cobros']
+    # 🚨 CAMBIO: Ya no usamos la lista hardcoded.
+    excluded_cats = get_excluded_categories_list()
     
-    # Filtramos: Nos quedamos con lo que NO está en la lista excluida
+    # Filtramos dinámicamente
     df = df[~df['category'].isin(excluded_cats)]
-    # -------------------------------------------------------------
 
-    df['date'] = pd.to_datetime(df['date'])
+    df['date'] = pd.to_datetime(df['date'], format='mixed')
     df['Month'] = df['date'].dt.strftime('%Y-%m')
     
-    # Agrupamos
     return df.groupby(['Month', 'type'])['amount'].sum().reset_index()
 
+# backend/data_manager.py
+
 def get_category_summary():
-    """Gastos por categoría del usuario."""
+    """Gastos por categoría del usuario (DINÁMICO)."""
     df = get_transactions_df()
     if df.empty: return pd.DataFrame()
+    
+    # 🚨 CAMBIO
+    excluded_cats = get_excluded_categories_list()
+    df = df[~df['category'].isin(excluded_cats)]
+    
     return df[df['type'] == 'Expense'].groupby('category')['amount'].sum().reset_index()
-
 
 def add_iou(name, amount, iou_type, due_date, person_name=None, description=None):
     conn = get_connection()
@@ -1383,63 +1377,155 @@ def add_custom_category(name):
     finally: conn.close()
 # backend/data_manager.p
 
-# ... (otras funciones) ...
+# --- FUNCIONES DE PERFIL Y SEGURIDAD ---
 
-def get_historical_networth_trend(start_date=None, end_date=None):
-    """Historial de patrimonio filtrado por usuario."""
+def update_user_profile_data(new_name, new_password=None):
+    """Actualiza nombre y/o contraseña del usuario actual."""
     conn = get_connection()
     uid = get_uid()
     try:
-        # Patrimonio actual del usuario
-        current_nw = get_net_worth_breakdown()['net_worth']
-        today = date.today()
+        cursor = conn.cursor()
         
-        # Transacciones del usuario
-        df_trans = pd.read_sql_query("SELECT date, amount, type FROM transactions WHERE user_id = ?", conn, params=(uid,))
-        
-        if df_trans.empty: return pd.DataFrame()
+        # 1. Actualizar Nombre
+        if new_name:
+            cursor.execute("UPDATE users SET display_name = ? WHERE id = ?", (new_name, uid))
             
-        df_trans['date'] = pd.to_datetime(df_trans['date']).dt.date
-        min_db_date = df_trans['date'].min()
-        
-        req_start = date.fromisoformat(start_date) if start_date else min_db_date
-        req_end = date.fromisoformat(end_date) if end_date else today
-        
-        calc_start = min(req_start, min_db_date)
-        calc_end = max(req_end, today)
-        
-        daily_changes = df_trans.groupby(['date', 'type'])['amount'].sum().unstack(fill_value=0)
-        if 'Income' not in daily_changes.columns: daily_changes['Income'] = 0
-        if 'Expense' not in daily_changes.columns: daily_changes['Expense'] = 0
-        
-        daily_changes['net_change'] = daily_changes['Income'] - daily_changes['Expense']
-        
-        full_idx = pd.date_range(start=calc_start, end=calc_end).date
-        df_history = pd.DataFrame(index=full_idx)
-        df_history.index.name = 'date'
-        
-        df_history = df_history.join(daily_changes['net_change']).fillna(0)
-        df_history = df_history.sort_index(ascending=False)
-        
-        cumulative_changes = df_history['net_change'].cumsum()
-        df_history['net_worth'] = current_nw - cumulative_changes + df_history['net_change']
-        
-        df_history = df_history.sort_index().reset_index()
-        mask = (df_history['date'] >= req_start) & (df_history['date'] <= req_end)
-        return df_history.loc[mask]
-
+        # 2. Actualizar Password (si se envió)
+        if new_password:
+            hashed_pw = generate_password_hash(new_password, method='pbkdf2:sha256')
+            cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hashed_pw, uid))
+            
+        conn.commit()
+        return True, "Perfil actualizado correctamente."
+    except Exception as e:
+        return False, str(e)
     finally:
         conn.close()
 
 
-# backend/data_manager.p
-# 
-# y
+# --- FUNCIONES DE HISTORIAL IMPORTADO ---
+
+def create_historical_table():
+    """Crea tabla para datos importados manualmente (Legacy Data)."""
+    conn = get_connection()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS historical_net_worth (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            date TEXT,
+            net_worth REAL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+# Ejecutar creación de tabla al iniciar
+create_historical_table()
+
+def import_historical_data(df):
+    """Recibe un DataFrame con columnas 'Date' y 'Net_Worth' y lo guarda."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        cursor = conn.cursor()
+        
+        # Limpiamos datos previos importados para evitar duplicados masivos 
+        # (Opcional: podrías decidir no borrar si quieres cargas incrementales)
+        cursor.execute("DELETE FROM historical_net_worth WHERE user_id = ?", (uid,))
+        
+        count = 0
+        for _, row in df.iterrows():
+            # Asumimos formato YYYY-MM-DD
+            d_val = pd.to_datetime(row['Date']).strftime('%Y-%m-%d')
+            nw_val = float(row['Net_Worth'])
+            
+            cursor.execute("INSERT INTO historical_net_worth (user_id, date, net_worth) VALUES (?, ?, ?)", 
+                           (uid, d_val, nw_val))
+            count += 1
+            
+        conn.commit()
+        return True, f"Se importaron {count} registros históricos."
+    except Exception as e:
+        return False, f"Error DB: {str(e)}"
+    finally:
+        conn.close()
+
 # backend/data_manager.py
 
-# backend/data_manager.py (MODIFICADO)
+def get_historical_networth_trend(start_date=None, end_date=None):
+    """Historial HÍBRIDO: Calculado (Reciente) + Importado (Antiguo) con corrección de Variación."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        # A. OBTENER DATOS CALCULADOS (Desde transacciones)
+        current_nw = get_net_worth_breakdown()['net_worth']
+        today = date.today()
+        
+        df_trans = pd.read_sql_query("SELECT date, amount, type FROM transactions WHERE user_id = ?", conn, params=(uid,))
+        
+        df_calc = pd.DataFrame()
+        
+        if not df_trans.empty:
+            # 🚨 CORRECCIÓN AQUÍ: Agregamos format='mixed'
+            df_trans['date'] = pd.to_datetime(df_trans['date'], format='mixed').dt.date
+            
+            min_db_date = df_trans['date'].min()
+            
+            calc_start = min_db_date
+            calc_end = today
+            
+            daily_changes = df_trans.groupby(['date', 'type'])['amount'].sum().unstack(fill_value=0)
+            if 'Income' not in daily_changes.columns: daily_changes['Income'] = 0
+            if 'Expense' not in daily_changes.columns: daily_changes['Expense'] = 0
+            
+            daily_changes['net_change'] = daily_changes['Income'] - daily_changes['Expense']
+            
+            full_idx = pd.date_range(start=calc_start, end=calc_end).date
+            df_calc = pd.DataFrame(index=full_idx)
+            df_calc.index.name = 'date'
+            
+            df_calc = df_calc.join(daily_changes['net_change']).fillna(0)
+            df_calc = df_calc.sort_index(ascending=False)
+            
+            cumulative_changes = df_calc['net_change'].cumsum()
+            df_calc['net_worth'] = current_nw - cumulative_changes + df_calc['net_change']
+            df_calc = df_calc.sort_index().reset_index() # Ascendente
+            df_calc = df_calc[['date', 'net_worth']]
 
-# --- GESTIÓN DE INVERSIONES (STOCKS) ---
+        # B. OBTENER DATOS IMPORTADOS (Excel)
+        df_imported = pd.read_sql_query("SELECT date, net_worth FROM historical_net_worth WHERE user_id = ? ORDER BY date ASC", conn, params=(uid,))
+        
+        if not df_imported.empty:
+            # 🚨 CORRECCIÓN AQUÍ TAMBIÉN (Por seguridad): Agregamos format='mixed'
+            df_imported['date'] = pd.to_datetime(df_imported['date'], format='mixed').dt.date
+            
+            # Si hay overlap, damos prioridad al cálculo automático (datos recientes)
+            if not df_calc.empty:
+                min_calc_date = df_calc['date'].min()
+                df_imported = df_imported[df_imported['date'] < min_calc_date]
+        
+        # C. UNIÓN FINAL Y CÁLCULO DE VARIACIÓN
+        df_final = pd.concat([df_imported, df_calc], ignore_index=True)
+        
+        # 1. Ordenamos por fecha
+        df_final = df_final.sort_values('date').drop_duplicates(subset=['date'], keep='last')
+        
+        # 2. CÁLCULO AUTOMÁTICO DE VARIACIÓN
+        df_final['net_change'] = df_final['net_worth'].diff().fillna(0)
+        
+        # Filtrar por fechas solicitadas por el usuario
+        if start_date:
+            s_date = pd.to_datetime(start_date).date()
+            df_final = df_final[df_final['date'] >= s_date]
+        
+        if end_date:
+            e_date = pd.to_datetime(end_date).date()
+            df_final = df_final[df_final['date'] <= e_date]
+            
+        return df_final
+
+    finally:
+        conn.close()
 
 def _get_price_finnhub(ticker_symbol, avg_price_fallback=0):
     """
@@ -2483,6 +2569,19 @@ def check_and_update_users_table():
             print("Migrando DB: Agregando salario base de estabilizador...")
             cursor.execute("ALTER TABLE users ADD COLUMN stabilizer_base_salary REAL DEFAULT 0.0")
 
+        cursor.execute("PRAGMA table_info(categories)")
+        cat_cols = [c[1] for c in cursor.fetchall()]
+        
+        if 'is_excluded' not in cat_cols:
+            print("Migrando DB: Agregando 'is_excluded' a categorías...")
+            cursor.execute("ALTER TABLE categories ADD COLUMN is_excluded INTEGER DEFAULT 0")
+            
+            # Marcar las categorías del sistema antiguas como excluidas por defecto
+            # (Para no romper los datos de usuarios existentes)
+            cats_to_exclude = ['Transferencia', 'Transferencia/Pago', 'Deudas/Cobros']
+            for c in cats_to_exclude:
+                cursor.execute("UPDATE categories SET is_excluded = 1 WHERE name = ?", (c,))
+                
         conn.commit()
     except Exception as e:
         print(f"Error migrando DB: {e}")
@@ -2682,13 +2781,23 @@ def register_user(username, password, email, display_name=None):
         
         new_uid = cursor.lastrowid
         
-        # Crear categorías por defecto
-        defaults = [
-            ('Costos Fijos', new_uid), ('Libres', new_uid), 
-            ('Inversión', new_uid), ('Ahorro', new_uid), 
-            ('Deudas/Cobros', new_uid), ('Ingresos', new_uid)
+        # --- NUEVAS CATEGORÍAS POR DEFECTO ---
+        # Formato: (Nombre, is_excluded)
+        # 0 = Se muestra en gráficas (Ingreso/Gasto real)
+        # 1 = Se oculta (Movimiento de balance, Deuda, Transferencia interna)
+        default_cats = [
+            ('Salario', 0),
+            ('Libres', 0),
+            ('Costos Fijos', 0),
+            ('Inversion', 0), 
+            ('Ahorro', 0),
+            ('Deuda/Cobro', 1),      # Excluido (Movimiento de Pasivo/Activo)
+            ('Transferencia', 1),    # Excluido (Sistema interno obligatorio)
+            ('Transferencia/Pago', 1)# Excluido (Sistema interno obligatorio)
         ]
-        cursor.executemany("INSERT INTO categories (name, user_id) VALUES (?, ?)", defaults)
+        
+        cursor.executemany("INSERT INTO categories (name, user_id, is_excluded) VALUES (?, ?, ?)", 
+                           [(c[0], new_uid, c[1]) for c in default_cats])
         
         conn.commit()
         return True, "Usuario registrado."
@@ -2697,7 +2806,23 @@ def register_user(username, password, email, display_name=None):
         return False, str(e)
     finally:
         conn.close()
-# ... (código existente) ...
+
+# backend/data_manager.py
+
+def get_excluded_categories_list():
+    """Retorna una lista de nombres de categorías que deben excluirse de los gráficos."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        # Seleccionamos las marcadas como excluidas en la DB
+        df = pd.read_sql_query("SELECT name FROM categories WHERE user_id = ? AND is_excluded = 1", conn, params=(uid,))
+        if not df.empty:
+            return df['name'].tolist()
+        return []
+    except:
+        return []
+    finally:
+        conn.close()
 
 # --- FUNCIONES DE ADMINISTRADOR ---
 
@@ -3635,3 +3760,76 @@ def execute_stabilizer_withdrawal(amount, source_acc_id, dest_acc_id):
         conn.rollback()
         return False, str(e)
     finally: conn.close()
+
+# --- AGREGAR AL FINAL DE backend/data_manager.py ---
+
+def manual_price_refresh():
+    """
+    Fuerza la actualización de precios y retorna el estado de la conexión.
+    Retorna: (Success: bool, Message: str)
+    """
+    if not finnhub_client:
+        return False, "Error: API Key no configurada en .env"
+
+    conn = get_connection()
+    uid = get_uid()
+    
+    try:
+        # 1. Obtener tickers del usuario
+        df = pd.read_sql_query("SELECT DISTINCT ticker FROM investments WHERE user_id = ?", conn, params=(uid,))
+        tickers = df['ticker'].tolist()
+        
+        if not tickers:
+            return True, "No tienes activos para actualizar."
+
+        # 2. Intentar actualizar (Capturando errores de red)
+        success_count = 0
+        errors = []
+        
+        cursor = conn.cursor()
+        for t in tickers:
+            try:
+                # Llamada a la API
+                q = finnhub_client.quote(t)
+                
+                # Validación básica de respuesta
+                if q['c'] == 0 and q['d'] is None:
+                    # A veces devuelve 0 si el ticker está mal, pero no es error de red
+                    continue 
+
+                # Guardar en Caché Global
+                cursor.execute("""
+                    UPDATE market_cache 
+                    SET price=?, day_change=?, day_change_pct=?, day_high=?, day_low=?, last_updated=datetime('now','localtime')
+                    WHERE ticker=?
+                """, (q['c'], q['d'], q['dp'], q['h'], q['l'], t))
+                
+                # Si no existía (ej. se borró el caché), insertamos lo básico
+                if cursor.rowcount == 0:
+                     cursor.execute("""
+                    INSERT INTO market_cache (ticker, price, day_change, day_change_pct, last_updated)
+                    VALUES (?, ?, ?, ?, datetime('now','localtime'))
+                    """, (t, q['c'], q['d'], q['dp']))
+                
+                success_count += 1
+                time.sleep(0.1) # Respetar límites de API
+                
+            except Exception as e:
+                errors.append(f"{t}: {str(e)}")
+
+        conn.commit()
+        
+        # 3. Evaluar resultados
+        if success_count == len(tickers):
+            return True, f"Precios actualizados ({success_count}/{len(tickers)})."
+        elif success_count > 0:
+            return True, f"Actualización parcial. Fallaron {len(errors)} activos."
+        else:
+            # Si fallaron todos, probablemente es error de conexión o límite de API
+            error_detail = errors[0] if errors else "Sin respuesta"
+            return False, f"Fallo de conexión con el Mercado. ({error_detail})"
+
+    except Exception as e:
+        return False, f"Error interno: {str(e)}"
+    finally:
+        conn.close()

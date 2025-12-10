@@ -212,11 +212,10 @@ def update_stabilizer(acc_id, freq, sig):
     # Mensajes Inteligentes
     if is_capped:
         # CASO: Estamos retirando menos del ideal (ej. $207 en vez de $461)
-        sus_msg = "⚠️ Retiro Sostenible (Fase 1)"
+        sus_msg = "⚠️ Retiro Sostenible"
         sus_cls = "text-warning small fw-bold"
         
         breakdown = [
-            html.Div(f"Retiro Seguro Actual: ${suggested_amt:,.2f}", className="fw-bold text-success"),
             html.Div(
                 f"Estás limitado por el flujo de caja en {bottleneck}.", 
                 className="text-muted small mt-1"

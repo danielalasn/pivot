@@ -419,7 +419,7 @@ def cred_load_cards(v_id, url, signal, search_term):
 
     cards = []
     for _, row in df.iterrows():
-        # Cálculos
+        # Cálculos Financieros
         limit = row['credit_limit']
         debt = row['current_balance']
         inst_pend = row.get('installments_pending_total', 0.0)
@@ -429,6 +429,25 @@ def cred_load_cards(v_id, url, signal, search_term):
         pay_day = int(row['payment_day']) if row['payment_day'] else 1
         d_left = (get_next_payment_date(pay_day) - date.today()).days
         
+        # --- NUEVO: CÁLCULO PARA PROGRESS BAR ---
+        if limit > 0:
+            util_pct = (debt / limit) * 100
+            avail_pct = 100 - util_pct
+            # Manejo visual si la deuda excede el límite
+            if util_pct > 100: 
+                util_pct = 100
+                avail_pct = 0
+        else:
+            util_pct = 0
+            avail_pct = 0
+
+        # Crear la barra de progreso (Verde = Disponible, Rojo = Deuda)
+        card_progress = dbc.Progress([
+            dbc.Progress(value=avail_pct, color="success", bar=True),
+            dbc.Progress(value=util_pct, color="danger", bar=True),
+        ], style={"height": "6px"}, className="mb-2 mt-1")
+        # ----------------------------------------
+        
         # Texto de Pago
         p_txt = f"En {d_left} días" if d_left > 1 else ("Mañana" if d_left == 1 else "¡Hoy!")
         p_cls = "text-warning" if d_left < 5 else "text-muted"
@@ -437,13 +456,11 @@ def cred_load_cards(v_id, url, signal, search_term):
         # Visualización de Deuda Compacta
         if inst_pend > 0:
             debt_display = html.Div([
-                # CAMBIO AQUÍ: Exigible en rojo (text-danger)
                 dbc.Row([
                     dbc.Col("Exigible:", width=6, className="text-muted"), 
                     dbc.Col(f"${payable:,.2f}", width=6, className="text-end fw-bold text-danger")
                 ], className="g-0 small"),
                 
-                # CAMBIO AQUÍ: Cuotas en blanco (text-white)
                 dbc.Row([
                     dbc.Col("Cuotas:", width=6, className="text-muted"), 
                     dbc.Col(f"${inst_pend:,.2f}", width=6, className="text-end text-white")
@@ -474,10 +491,11 @@ def cred_load_cards(v_id, url, signal, search_term):
                 
                 html.Hr(className="my-1 border-secondary"),
                 
-                # Disponible (Texto grande ajustado)
+                # Disponible y Barra de Progreso
                 html.Div([
                     html.Small("Disponible", className="text-success d-block small"),
-                    html.H4(f"${avail:,.2f}", className="text-success fw-bold mb-2")
+                    html.H4(f"${avail:,.2f}", className="text-success fw-bold mb-1"),
+                    card_progress # <--- AQUI INSERTAMOS LA BARRA
                 ], className="text-center"),
 
                 # Footer Deuda
@@ -492,7 +510,6 @@ def cred_load_cards(v_id, url, signal, search_term):
         cards.append(col_wrapper)
         
     return cards
-
 
 @callback(Output("inst-update-signal", "data", allow_duplicate=True), Input({'type': 'cred-up', 'index': ALL}, 'n_clicks'), Input({'type': 'cred-down', 'index': ALL}, 'n_clicks'), State("inst-update-signal", "data"), prevent_initial_call=True)
 def cred_reorder(n_up, n_down, sig):
