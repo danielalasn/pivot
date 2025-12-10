@@ -7,7 +7,7 @@ from flask_login import current_user, logout_user
 # Importar la app y páginas
 from app import app, server
 # 🚨 CAMBIO 1: Agregamos 'register' a la lista de importaciones iniciales
-from pages import dashboard, transactions, debts, login, register, admin # <--- AGREGA distribution # <--- AGREGA admin
+from pages import dashboard, transactions, debts, login, admin # <--- AGREGA distribution # <--- AGREGA admin
 from pages.accounts import accounts 
 from pages.investments import investments 
 from pages.distribution import distribution
@@ -19,10 +19,9 @@ nav_links = [
     dbc.NavLink([html.I(className="bi bi-house me-2"), "Dashboard"], href="/", active="exact"),
     dbc.NavLink([html.I(className="bi bi-receipt me-2"), "Transacciones"], href="/transacciones", active="exact"),
     dbc.NavLink([html.I(className="bi bi-wallet2 me-2"), "Cuentas"], href="/cuentas", active="exact"),
-    dbc.NavLink([html.I(className="bi bi-pie-chart me-2"), "Distribución"], href="/distribucion", active="exact"),
     dbc.NavLink([html.I(className="bi bi-arrow-left-right me-2"), "Deudas"], href="/deudas", active="exact"), 
     dbc.NavLink([html.I(className="bi bi-graph-up me-2"), "Inversiones"], href="/inversiones", active="exact"),
-    
+    dbc.NavLink([html.I(className="bi bi-pie-chart me-2"), "Distribución"], href="/distribucion", active="exact"),
     # Botón de Salir (Logout)
     dbc.NavLink([html.I(className="bi bi-box-arrow-left me-2 text-danger"), "Cerrar Sesión"], href="/logout", active="exact", className="mt-4 border-top border-secondary pt-3"),
 ]
@@ -88,9 +87,9 @@ def update_sidebar_links(pathname):
         dbc.NavLink([html.I(className="bi bi-house me-2"), "Dashboard"], href="/", active="exact"),
         dbc.NavLink([html.I(className="bi bi-receipt me-2"), "Transacciones"], href="/transacciones", active="exact"),
         dbc.NavLink([html.I(className="bi bi-wallet2 me-2"), "Cuentas"], href="/cuentas", active="exact"),
-        dbc.NavLink([html.I(className="bi bi-pie-chart me-2"), "Distribución"], href="/distribucion", active="exact"),
         dbc.NavLink([html.I(className="bi bi-arrow-left-right me-2"), "Deudas"], href="/deudas", active="exact"), 
         dbc.NavLink([html.I(className="bi bi-graph-up me-2"), "Inversiones"], href="/inversiones", active="exact"),
+        dbc.NavLink([html.I(className="bi bi-pie-chart me-2"), "Distribución"], href="/distribucion", active="exact"),
     ]
     
     # Si es ADMIN, agregamos el link especial
@@ -123,11 +122,6 @@ def display_page(pathname):
         if current_user.is_authenticated: return dashboard.layout 
         return login.layout
     
-    # 🚨 CAMBIO 2: Ya no importamos 'register' aquí adentro, usamos el global
-    if pathname == "/register":
-        if current_user.is_authenticated: return dashboard.layout
-        return register.layout # Usa la variable importada arriba
-
     # C. Rutas Privadas (Requieren Auth)
     if current_user.is_authenticated:
         if pathname == "/" or pathname == "/dashboard":
@@ -136,12 +130,12 @@ def display_page(pathname):
             return transactions.layout
         elif pathname == "/cuentas":
             return accounts.layout
-        elif pathname == "/distribucion":
-            return distribution.layout
         elif pathname == "/deudas":
             return debts.layout
         elif pathname == "/inversiones":
             return investments.layout
+        elif pathname == "/distribucion":
+            return distribution.layout
         elif pathname == "/admin":
             return admin.layout
         else:

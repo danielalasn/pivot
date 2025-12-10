@@ -298,16 +298,36 @@ def get_debit_bank_summary():
         return df
     finally: conn.close()
 
+def calculate_installment_value(amount, rate, total_quotas):
+    """
+    Calcula el valor de una cuota individual usando la misma lógica para todo el sistema.
+    Maneja Tasa 0 correctamente.
+    """
+    if total_quotas == 0: return 0.0
+    
+    if rate > 0:
+        # Fórmula de Amortización (PMT)
+        i = rate / 12 / 100
+        n = total_quotas
+        denominator = ((1 + i) ** n) - 1
+        if denominator != 0:
+            numerator = i * ((1 + i) ** n)
+            q_val = amount * (numerator / denominator)
+            return q_val
+    
+    # Si Tasa es 0 o cálculo falla
+    return amount / total_quotas
 
-# data_manager.py
 
 def get_credit_summary_data():
-    """Métricas de Crédito (Límite, Deuda, Cuotas) filtradas por usuario."""
+    """
+    Métricas de Crédito corregidas para usar la fórmula exacta de cuotas.
+    """
     conn = get_connection()
     uid = get_uid()
     summary = {'total_limit': 0.0, 'total_debt': 0.0, 'total_installments': 0.0}
     try:
-        # Solo tarjetas del usuario
+        # 1. Totales de Tarjetas
         df = pd.read_sql_query("SELECT id, credit_limit, current_balance FROM accounts WHERE type = 'Credit' AND user_id = ?", conn, params=(uid,))
         
         if df.empty: return summary
@@ -315,28 +335,27 @@ def get_credit_summary_data():
         summary['total_limit'] = df['credit_limit'].sum()
         summary['total_debt'] = df['current_balance'].sum()
         
-        # Solo cuotas del usuario
+        # 2. Cálculo Preciso de Cuotas Pendientes
         installments_df = pd.read_sql_query("SELECT * FROM installments WHERE user_id = ?", conn, params=(uid,))
-        total_pending = 0.0
+        total_pending_value = 0.0
         
-        for _, row in df.iterrows():
-            acc_id = row['id']
-            my_installs = installments_df[installments_df['account_id'] == acc_id]
+        # Iteramos y calculamos usando la función unificada
+        for _, inst_row in installments_df.iterrows():
+            tq = inst_row['total_quotas']
+            pq = inst_row['paid_quotas']
             
-            for _, inst_row in my_installs.iterrows():
-                if inst_row['total_quotas'] > 0:
-                    total_with_int = inst_row['total_amount'] * (1 + (inst_row['interest_rate'] / 100))
-                    quota_val = total_with_int / inst_row['total_quotas']
-                    remaining = inst_row['total_quotas'] - inst_row['paid_quotas']
-                    total_pending += quota_val * remaining
+            if tq > 0 and pq < tq:
+                # Usamos la función helper para que coincida con el frontend
+                q_val = calculate_installment_value(inst_row['total_amount'], inst_row['interest_rate'], tq)
+                
+                remaining_quotas = tq - pq
+                total_pending_value += q_val * remaining_quotas
         
-        summary['total_installments'] = total_pending
+        summary['total_installments'] = total_pending_value
         
     finally:
         conn.close()
     return summary
-
-
 
 def get_asset_type_summary():
     """Calcula el saldo total agrupado por el tipo de cuenta (Debit, Cash)."""
@@ -359,14 +378,19 @@ def get_asset_type_summary():
 
 
 # --- FINANCIAMIENTOS (INSTALLMENTS) ---
+# En backend/data_manager.py
+
+# --- FINANCIAMIENTOS (INSTALLMENTS) ---
+
 def add_installment(account_id, name, amount, rate, total_q, paid_q, pay_day):
     conn = get_connection()
     cursor = conn.cursor()
+    uid = get_uid() # <--- IMPORTANTE: Obtenemos el usuario
     try:
         cursor.execute("""
-            INSERT INTO installments (account_id, name, total_amount, interest_rate, total_quotas, paid_quotas, payment_day)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (account_id, name, amount, rate, total_q, paid_q, pay_day))
+            INSERT INTO installments (user_id, account_id, name, total_amount, interest_rate, total_quotas, paid_quotas, payment_day)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (uid, account_id, name, amount, rate, total_q, paid_q, pay_day))
         conn.commit()
         return True, "Financiamiento agregado."
     except Exception as e:
@@ -377,12 +401,14 @@ def add_installment(account_id, name, amount, rate, total_q, paid_q, pay_day):
 def update_installment(inst_id, name, amount, rate, total_q, paid_q, pay_day):
     conn = get_connection()
     cursor = conn.cursor()
+    uid = get_uid()
     try:
+        # Agregamos AND user_id = ? para seguridad
         cursor.execute("""
             UPDATE installments 
             SET name = ?, total_amount = ?, interest_rate = ?, total_quotas = ?, paid_quotas = ?, payment_day = ?
-            WHERE id = ?
-        """, (name, amount, rate, total_q, paid_q, pay_day, inst_id))
+            WHERE id = ? AND user_id = ?
+        """, (name, amount, rate, total_q, paid_q, pay_day, inst_id, uid))
         conn.commit()
         return True, "Financiamiento actualizado."
     except Exception as e:
@@ -392,8 +418,10 @@ def update_installment(inst_id, name, amount, rate, total_q, paid_q, pay_day):
 
 def get_installments(account_id):
     conn = get_connection()
+    uid = get_uid()
     try:
-        df = pd.read_sql_query("SELECT * FROM installments WHERE account_id = ?", conn, params=(account_id,))
+        # Filtramos también por usuario para que nadie vea datos ajenos
+        df = pd.read_sql_query("SELECT * FROM installments WHERE account_id = ? AND user_id = ?", conn, params=(account_id, uid))
     except: df = pd.DataFrame()
     conn.close()
     return df
@@ -401,13 +429,13 @@ def get_installments(account_id):
 def delete_installment(installment_id):
     conn = get_connection()
     cursor = conn.cursor()
+    uid = get_uid()
     try:
-        cursor.execute("DELETE FROM installments WHERE id = ?", (installment_id,))
+        cursor.execute("DELETE FROM installments WHERE id = ? AND user_id = ?", (installment_id, uid))
         conn.commit()
         return True, "Eliminado."
     except Exception as e: return False, str(e)
     finally: conn.close()
-
 # --- TRANSACCIONES Y ANALYTICS ---
 def get_dashboard_metrics(selected_month_str=None):
     """
@@ -803,27 +831,39 @@ def get_abono_balance():
 
 
 def get_credit_abono_reserve():
+    """Obtiene la reserva del usuario actual."""
+    setup_abono_reserve() # Aseguramos que la tabla esté bien
     conn = get_connection()
     uid = get_uid()
     try:
         cur = conn.cursor()
+        # Buscamos POR USER_ID, no por ID fijo
         cur.execute("SELECT balance FROM abono_reserve WHERE user_id = ?", (uid,))
         res = cur.fetchone()
         return res[0] if res else 0.0
     finally: conn.close()
 
 
+
 def update_credit_abono_reserve(amount):
-    """Actualiza (reemplaza) el saldo de la reserva de abono."""
+    """Actualiza la reserva del usuario actual (INSERT O UPDATE)."""
+    setup_abono_reserve()
     conn = get_connection()
+    uid = get_uid()
     try:
         cursor = conn.cursor()
         
-        # 1. Asegura que la tabla exista (solo si no se inicializó en init_db)
-        setup_abono_reserve() 
+        # Verificar si ya existe fila para este usuario
+        cursor.execute("SELECT id FROM abono_reserve WHERE user_id = ?", (uid,))
+        row = cursor.fetchone()
         
-        # 2. Inserta o reemplaza el valor único con ID=1
-        cursor.execute("INSERT OR REPLACE INTO abono_reserve (id, balance) VALUES (1, ?)", (amount,))
+        if row:
+            # Actualizar
+            cursor.execute("UPDATE abono_reserve SET balance = ? WHERE user_id = ?", (amount, uid))
+        else:
+            # Insertar nuevo
+            cursor.execute("INSERT INTO abono_reserve (user_id, balance) VALUES (?, ?)", (uid, amount))
+            
         conn.commit()
         return True, "Reserva de abono actualizada."
     except Exception as e:
@@ -831,21 +871,64 @@ def update_credit_abono_reserve(amount):
     finally:
         conn.close()
 
+def update_credit_abono_reserve(amount):
+    """Actualiza la reserva del usuario actual (INSERT O UPDATE)."""
+    setup_abono_reserve()
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        cursor = conn.cursor()
+        
+        # Verificar si ya existe fila para este usuario
+        cursor.execute("SELECT id FROM abono_reserve WHERE user_id = ?", (uid,))
+        row = cursor.fetchone()
+        
+        if row:
+            # Actualizar
+            cursor.execute("UPDATE abono_reserve SET balance = ? WHERE user_id = ?", (amount, uid))
+        else:
+            # Insertar nuevo
+            cursor.execute("INSERT INTO abono_reserve (user_id, balance) VALUES (?, ?)", (uid, amount))
+            
+        conn.commit()
+        return True, "Reserva de abono actualizada."
+    except Exception as e:
+        return False, str(e)
+    finally:
+        conn.close()
+
+
+
 def setup_abono_reserve():
-    """Crea la tabla abono_reserve si no existe e inicializa el saldo."""
+    """
+    Crea la tabla abono_reserve y asegura que tenga la columna user_id.
+    """
     conn = get_connection()
     cursor = conn.cursor()
-    # Usamos CREATE TABLE IF NOT EXISTS para que funcione si init_db() no se ejecutó aún con esta tabla
+    
+    # 1. Crear tabla básica si no existe
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS abono_reserve (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
             balance REAL DEFAULT 0.0
         )
     """)
-    # Asegurarse de que siempre haya una fila con ID 1
-    cursor.execute("INSERT OR IGNORE INTO abono_reserve (id, balance) VALUES (1, 0.0)")
+    
+    # 2. MIGRACIÓN: Verificar si existe la columna user_id
+    # Si la tabla es vieja, probablemente no tenga user_id.
+    cursor.execute("PRAGMA table_info(abono_reserve)")
+    columns = [info[1] for info in cursor.fetchall()]
+    
+    if 'user_id' not in columns:
+        print("⚠️ Migrando tabla abono_reserve: Agregando user_id...")
+        cursor.execute("ALTER TABLE abono_reserve ADD COLUMN user_id INTEGER")
+        # Asignar al admin (ID 1) el saldo huérfano por defecto para no perderlo
+        cursor.execute("UPDATE abono_reserve SET user_id = 1 WHERE id = 1")
+    
     conn.commit()
     conn.close()
+
 
 # data_manager.py
 
@@ -2396,11 +2479,70 @@ def check_and_update_users_table():
             print("Migrando DB: Agregando last_total_income...")
             cursor.execute("ALTER TABLE users ADD COLUMN last_total_income REAL DEFAULT 0.0")
 
+        if 'stabilizer_base_salary' not in user_columns:
+            print("Migrando DB: Agregando salario base de estabilizador...")
+            cursor.execute("ALTER TABLE users ADD COLUMN stabilizer_base_salary REAL DEFAULT 0.0")
+
         conn.commit()
     except Exception as e:
         print(f"Error migrando DB: {e}")
     finally:
         conn.close()
+
+
+
+check_and_update_users_table()
+
+
+# En backend/data_manager.py
+
+def fix_orphaned_installments():
+    """
+    Repara financiamientos que no tienen user_id asignado,
+    copiando el user_id de la cuenta a la que pertenecen.
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        # SQL Mágico: Busca cuotas sin dueño y les asigna el dueño de la tarjeta asociada
+        cursor.execute("""
+            UPDATE installments 
+            SET user_id = (SELECT user_id FROM accounts WHERE accounts.id = installments.account_id)
+            WHERE user_id IS NULL OR user_id = 0
+        """)
+        if cursor.rowcount > 0:
+            print(f"🔧 Se repararon {cursor.rowcount} financiamientos huérfanos.")
+        conn.commit()
+    except Exception as e:
+        print(f"Error reparando cuotas: {e}")
+    finally:
+        conn.close()
+
+# EJECUTAR AL IMPORTAR (Justo debajo de check_and_update_users_table)
+fix_orphaned_installments() # <--- AGREGA ESTA LÍNEA
+
+
+def get_user_stabilizer_salary():
+    """Recupera el salario base específico del estabilizador."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT stabilizer_base_salary FROM users WHERE id = ?", (uid,))
+        res = cur.fetchone()
+        return res[0] if res else 0.0
+    finally: conn.close()
+
+def update_user_stabilizer_salary(amount):
+    """Guarda el salario base del estabilizador."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("UPDATE users SET stabilizer_base_salary = ? WHERE id = ?", (amount, uid))
+        conn.commit()
+        return True
+    except: return False
+    finally: conn.close()
 
 # 2. AGREGA estas funciones 'Getter' para Inversión y GF
 def get_user_inv_fund_account():
@@ -3212,3 +3354,284 @@ def process_savings_withdrawal(goal_id, amount, account_id, is_transfer=False,
         return False, f"Error: {str(e)}"
     finally:
         conn.close()
+
+# --- EN backend/data_manager.py ---
+
+# 1. Crear Tabla de Eventos de Ingreso (Bonos/Freelance)
+
+def create_income_events_table():
+    conn = get_connection()
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS income_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        name TEXT NOT NULL,
+        amount REAL NOT NULL,
+        event_date TEXT NOT NULL -- YYYY-MM-DD
+    )
+    """)
+    # Agregamos columna para cuenta estabilizadora en users si no existe
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN stabilizer_account_id INTEGER")
+    except: pass
+    conn.commit()
+    conn.close()
+
+# Ejecutar migración
+create_income_events_table()
+
+# 2. Preferencia de Cuenta Estabilizadora
+def get_user_stabilizer_account():
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT stabilizer_account_id FROM users WHERE id = ?", (uid,))
+        res = cur.fetchone()
+        return res[0] if res else None
+    finally: conn.close()
+
+def update_user_stabilizer_account(acc_id):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("UPDATE users SET stabilizer_account_id = ? WHERE id = ?", (acc_id, uid))
+        conn.commit()
+        return True
+    finally: conn.close()
+
+# 3. CRUD Eventos
+def add_income_event(name, amount, date_val):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("INSERT INTO income_events (user_id, name, amount, event_date) VALUES (?, ?, ?, ?)", 
+                     (uid, name, amount, date_val))
+        conn.commit()
+        return True, "Evento agregado."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+
+def delete_income_event(event_id):
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("DELETE FROM income_events WHERE id = ? AND user_id = ?", (event_id, uid))
+        conn.commit()
+        return True, "Eliminado."
+    except: return False, "Error"
+    finally: conn.close()
+
+def get_income_events_df():
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        return pd.read_sql_query("SELECT * FROM income_events WHERE user_id = ? ORDER BY event_date ASC", conn, params=(uid,))
+    finally: conn.close()
+
+# En backend/data_manager.py
+
+def get_income_event_by_id(event_id):
+    """Obtiene un evento específico para cargarlo en el modal de edición."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        # Buscamos por ID y Usuario para seguridad
+        df = pd.read_sql_query("SELECT * FROM income_events WHERE id = ? AND user_id = ?", conn, params=(event_id, uid))
+        if not df.empty:
+            return df.iloc[0].to_dict()
+        return None
+    finally: conn.close()
+
+def update_income_event(event_id, name, amount, date_val):
+    """Actualiza un evento existente."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("""
+            UPDATE income_events 
+            SET name = ?, amount = ?, event_date = ?
+            WHERE id = ? AND user_id = ?
+        """, (name, amount, date_val, event_id, uid))
+        conn.commit()
+        return True, "Evento actualizado."
+    except Exception as e: return False, str(e)
+    finally: conn.close()
+# 4. Lógica de Simulación (El corazón del sistema)
+# --- EN backend/data_manager.py ---
+
+# --- EN backend/data_manager.py ---
+
+import calendar
+from dateutil.relativedelta import relativedelta # Asegúrate de tener dateutil o usa lógica nativa
+
+# En backend/data_manager.py
+
+# En backend/data_manager.py
+
+def calculate_stabilizer_projection(base_salary_monthly, current_stabilizer_balance, frequency='monthly'):
+    """
+    Proyecta usando la lógica de "Mínimo Sostenible" (Cuello de botella).
+    Calcula el máximo retiro posible que asegura que el saldo NUNCA baje de cero
+    en ningún punto del futuro.
+    """
+    events_df = get_income_events_df()
+    
+    # 1. CÁLCULO DE TOTALES E IDEALES
+    total_bonuses = events_df['amount'].sum() if not events_df.empty else 0
+    annual_base_salary = base_salary_monthly * 12
+    total_annual_income = annual_base_salary + total_bonuses
+    
+    if frequency == 'biweekly':
+        periods_count = 24
+        lbl_freq = "Q"
+    else:
+        periods_count = 12
+        lbl_freq = "Mes"
+
+    # Meta Ideal (Si tuviéramos todo el dinero hoy en la mano)
+    total_per_period_ideal = total_annual_income / periods_count
+    supplement_ideal = total_per_period_ideal - (base_salary_monthly / (2 if frequency == 'biweekly' else 1))
+    supplement_ideal = max(0, supplement_ideal)
+
+    # 2. GENERAR TIMELINE (Igual que siempre)
+    today = date.today()
+    timeline = []
+    curr_date = today
+    
+    if frequency == 'biweekly':
+        if curr_date.day <= 15:
+            start_date = date(curr_date.year, curr_date.month, 15)
+        else:
+            last_day = calendar.monthrange(curr_date.year, curr_date.month)[1]
+            start_date = date(curr_date.year, curr_date.month, last_day)
+    else:
+        last_day = calendar.monthrange(curr_date.year, curr_date.month)[1]
+        start_date = date(curr_date.year, curr_date.month, last_day)
+
+    temp_date = start_date
+    for i in range(periods_count):
+        period_end_date = temp_date
+        
+        # Labels
+        if frequency == 'biweekly':
+            is_first_half = (period_end_date.day <= 15)
+            q_label = "Q1" if is_first_half else "Q2"
+            month_label = calendar.month_name[period_end_date.month][:3]
+            label = f"{month_label} {q_label}"
+            
+            if is_first_half:
+                last_d = calendar.monthrange(period_end_date.year, period_end_date.month)[1]
+                temp_date = date(period_end_date.year, period_end_date.month, last_d)
+            else:
+                next_m = period_end_date + relativedelta(months=1)
+                temp_date = date(next_m.year, next_m.month, 15)
+        else:
+            month_label = calendar.month_name[period_end_date.month][:3]
+            label = f"{month_label} {str(period_end_date.year)[2:]}"
+            temp_date = period_end_date + relativedelta(months=1)
+            last_d = calendar.monthrange(temp_date.year, temp_date.month)[1]
+            temp_date = date(temp_date.year, temp_date.month, last_d)
+
+        # Inflows
+        period_inflow = 0
+        if not events_df.empty:
+            for _, ev in events_df.iterrows():
+                ev_d = datetime.strptime(ev['event_date'], '%Y-%m-%d').date()
+                if ev_d.month == period_end_date.month and ev_d.year == period_end_date.year:
+                    if frequency == 'monthly':
+                        period_inflow += ev['amount']
+                    else:
+                        is_ev_first_half = ev_d.day <= 15
+                        is_period_first_half = period_end_date.day <= 15
+                        if is_ev_first_half == is_period_first_half:
+                            period_inflow += ev['amount']
+
+        timeline.append({'label': label, 'inflow': period_inflow})
+
+    # 3. ALGORITMO DE SOSTENIBILIDAD (EL CORAZÓN DEL CÁLCULO)
+    # Buscamos el "Mínimo Sostenible". 
+    # Calculamos cuánto podríamos retirar si quisiéramos llegar a CADA punto 'i' con saldo 0.
+    # El menor de esos valores es nuestro límite seguro hoy.
+    
+    max_sustainable_withdrawal = float('inf')
+    cumulative_inflow = 0
+    bottleneck_period = None
+    
+    for i, p in enumerate(timeline):
+        cumulative_inflow += p['inflow']
+        
+        # Fórmula: (Saldo Inicial + Entradas hasta hoy) / (Periodos hasta hoy)
+        limit_at_this_point = (current_stabilizer_balance + cumulative_inflow) / (i + 1)
+        
+        if limit_at_this_point < max_sustainable_withdrawal:
+            max_sustainable_withdrawal = limit_at_this_point
+            bottleneck_period = p['label']
+
+    # El retiro real es el menor entre el Ideal (461) y el Sostenible (207)
+    # Nunca retiramos más del ideal, pero bajamos si la sostenibilidad lo exige.
+    suggested_withdrawal = min(supplement_ideal, max_sustainable_withdrawal)
+    suggested_withdrawal = max(0, suggested_withdrawal) # Nunca negativo
+
+    # 4. PROYECCIÓN FINAL
+    final_projection = []
+    current_bal = current_stabilizer_balance
+    
+    for p in timeline:
+        # Proyectamos usando el retiro sugerido calculado arriba
+        next_bal = current_bal + p['inflow'] - suggested_withdrawal
+        
+        # Corrección visual pequeña: evitamos -0.00
+        if abs(next_bal) < 0.01: next_bal = 0.0
+        
+        final_projection.append({
+            'Month': p['label'],
+            'Balance': next_bal,
+            'Inflow': p['inflow'],
+            'Outflow': suggested_withdrawal
+        })
+        current_bal = next_bal
+
+    # is_capped: True si estamos retirando MENOS del ideal (ej. retirando 207 en vez de 461)
+    is_capped = suggested_withdrawal < (supplement_ideal - 0.01)
+
+    return {
+        'total_annual_income': total_annual_income,
+        'supplement_ideal': supplement_ideal,       # Meta (461)
+        'suggested_withdrawal': suggested_withdrawal, # Real Hoy (207)
+        'projection': pd.DataFrame(final_projection),
+        'is_capped': is_capped, # Bandera para mostrar advertencia
+        'bottleneck_period': bottleneck_period # Para decir "hasta Marzo"
+    }
+# 5. Ejecutar el Retiro (Mover dinero de Caja Chica -> Cuenta Principal)
+def execute_stabilizer_withdrawal(amount, source_acc_id, dest_acc_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    uid = get_uid()
+    date_val = date.today().strftime('%Y-%m-%d')
+    try:
+        # Validación
+        has_funds, msg = _check_sufficient_funds(cursor, source_acc_id, amount, uid)
+        if not has_funds: return False, msg
+        
+        # Transacción de Salida (Caja Chica)
+        cursor.execute("""
+            INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
+            VALUES (?, ?, 'Retiro Estabilizador', ?, 'Transferencia', 'Expense', ?, 'Sueldo Saludable')
+        """, (uid, date_val, amount, source_acc_id))
+        _adjust_account_balance(cursor, source_acc_id, amount, 'Expense', False, uid)
+        
+        # Transacción de Entrada (Cuenta Principal / Gasto Corriente)
+        if dest_acc_id:
+             cursor.execute("""
+                INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
+                VALUES (?, ?, 'Ingreso Estabilizador', ?, 'Transferencia', 'Income', ?, 'Sueldo Saludable')
+            """, (uid, date_val, amount, dest_acc_id))
+             _adjust_account_balance(cursor, dest_acc_id, amount, 'Income', False, uid)
+             
+        conn.commit()
+        return True, "Suplemento transferido con éxito."
+    except Exception as e:
+        conn.rollback()
+        return False, str(e)
+    finally: conn.close()

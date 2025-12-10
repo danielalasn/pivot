@@ -3,7 +3,7 @@ import dash
 from dash import dcc, html, callback, Input, Output, State, no_update, ctx 
 import dash_bootstrap_components as dbc
 from dash import dash_table
-from datetime import date
+from datetime import date, datetime
 import backend.data_manager as dm 
 import time 
 from utils import ui_helpers 
@@ -132,42 +132,59 @@ layout = dbc.Container([
                 # --- CUERPO DEL FORMULARIO ACTUALIZADO ---
                 dbc.CardBody([
                     
-                    # FILA 1: Fecha | Tipo | Monto (Sin cambios)
+                    # --- FILA 1: FECHA Y HORA ---
                     dbc.Row([
                         dbc.Col([
                             dbc.Label("Fecha", className="small mb-0"),
-                            dcc.DatePickerSingle(id='input-date', date=date.today(), display_format='YYYY-MM-DD', className='d-block w-100 small-date-picker'),
-                        ], width=4),
+                            dcc.DatePickerSingle(
+                                id='input-date', 
+                                date=date.today(), 
+                                display_format='YYYY-MM-DD', 
+                                className='d-block w-100 small-date-picker'
+                            ),
+                        ], width=6, className="pe-1"),
+                        
+                        dbc.Col([
+                            dbc.Label("Hora", className="small mb-0"),
+                            dbc.Input(
+                                id="input-time", 
+                                type="time", 
+                                value=datetime.now().strftime("%H:%M"), 
+                                size="sm"
+                            ),
+                        ], width=6, className="ps-1"),
+                    ], className="mb-2"), 
+
+                    # --- FILA 2: MONTO Y TIPO ---
+                    dbc.Row([
                         dbc.Col([
                             dbc.Label("Tipo", className="small mb-0"),
-                            html.Div(
-                                dbc.RadioItems(
-                                    id="input-trans-type", 
-                                    options=[
-                                        {"label": "Gasto", "value": "Expense"}, 
-                                        {"label": "Ingreso", "value": "Income"},
-                                        {"label": "Mov. Interno", "value": "Transfer"}
-                                    ], 
-                                    value="Expense", 
-                                    inline=True, 
-                                    className="small"
-                                ),
-                                className="mt-1"
-                            )
-                        ], width=4),
-                        dbc.Col([
+                            dcc.Dropdown(
+                                id="input-trans-type", 
+                                options=[
+                                    {"label": "Gasto", "value": "Expense"}, 
+                                    {"label": "Ingreso", "value": "Income"},
+                                    {"label": "Mov. Interno", "value": "Transfer"}
+                                ], 
+                                value="Expense", 
+                                clearable=False,
+                                className="text-dark small-dropdown"
+                            ),
+                        ], width=6),
+                         dbc.Col([
                             dbc.Label("Monto $", className="small mb-0 fw-bold text-info"),
                             dbc.Input(id="input-amount", placeholder="0.00", type="number", size="sm"),
-                        ], width=4)
-                    ], className="mb-2 g-2"), 
+                        ], width=6),
+                        
+                    ], className="mb-2"),
 
-                    # FILA 2: Cuentas (Sin cambios)
+                    # --- FILA 3: CUENTAS (ESTA ES LA QUE FALTABA) ---
                     dbc.Row([
                         dbc.Col([
                             dbc.Label(id="label-account-src", children="Cuenta", className="small mb-0"),
                             dcc.Dropdown(id="input-account-dd", 
                                          placeholder="Origen...", 
-                                         className="text-dark small-dropdown",optionHeight=65),
+                                         className="text-dark small-dropdown", optionHeight=65),
                         ], width=6),
                         dbc.Col([
                             html.Div(id="dest-account-container", children=[
@@ -175,10 +192,9 @@ layout = dbc.Container([
                                 dcc.Dropdown(id="input-account-dest-dd", placeholder="Destino...", className="text-dark small-dropdown", optionHeight=65),
                             ], style={"display": "none"})
                         ], width=6),
-                    ], className="mb-3 g-2"), # Cambié mb-2 a mb-3 para dar aire antes de las categorías
+                    ], className="mb-3 g-2"),
 
-                    # FILA 3: Categoría | Subcategoría (MOVIDO AQUÍ)
-                    # Nota: Cambié el className de la Row interna a mb-3 (antes mb-4) para que no quede tanto hueco con la nota
+                    # --- FILA 4: CATEGORÍAS ---
                     html.Div(id="category-input-container", children=[
                         dbc.Row([
                             dbc.Col([
@@ -210,18 +226,18 @@ layout = dbc.Container([
                                     )
                                 ], className="g-0 align-items-end")
                             ], width=6),
-                        ], className="mb-3 g-2"), # <--- Ajustado margen aquí
+                        ], className="mb-3 g-2"),
                     ]),
 
-                    # FILA 4: Nota / Detalle (MOVIDO AL FINAL)
+                    # --- FILA 5: NOTA ---
                     dbc.Row([
                         dbc.Col([
                             dbc.Label("Nota / Detalle", className="small mb-0"),
                             dbc.Input(id="input-name", placeholder="Ej. Pago de tarjeta...", type="text", size="sm"),
                         ], width=12),
-                    ], className="mb-4"), # <--- mb-4 aquí para separar bien del botón de registro
+                    ], className="mb-4"),
 
-                    # Botón Registrar
+                    # --- BOTÓN REGISTRAR ---
                     dbc.Button("Registrar", id="btn-add-trans", color="success", className="w-100 fw-bold", size="md"),
                     html.Div(id="msg-add-trans", className="mt-1 text-center small")
                 ])
@@ -262,9 +278,9 @@ def generate_table(dataframe):
         # Ordenamos descendente (Lo más reciente arriba)
         dataframe = dataframe.sort_values(by='date', ascending=False)
 
-        # 2. CREAR COLUMNA VISUAL (SOLO FECHA)
-        # Creamos una columna nueva 'date_display' solo con YYYY-MM-DD
-        dataframe['date_display'] = dataframe['date'].dt.strftime('%Y-%m-%d')
+        # 2. CREAR COLUMNA VISUAL (CON HORA)
+        # Cambiamos el formato para incluir hora y minuto
+        dataframe['date_display'] = dataframe['date'].dt.strftime('%Y-%m-%d %H:%M')
 
         dataframe['action'] = "ℹ️"
         dataframe['subcategory'] = dataframe['subcategory'].fillna('')
@@ -451,6 +467,7 @@ def update_subcats_modal(parent, sig):
      Output("input-amount", "value")],
     [Input("btn-add-trans", "n_clicks")],
     [State("input-date", "date"),
+     State("input-time", "value"),
      State("input-name", "value"),
      State("input-amount", "value"),
      State("input-category", "value"),
@@ -459,7 +476,7 @@ def update_subcats_modal(parent, sig):
      State("input-subcategory", "value"),
      State("input-account-dest-dd", "value")] # <--- NUEVO ESTADO: Destino
 )
-def add_transaction_callback(n_clicks, date_val, name, amount, category, t_type, acc_id, subcat, dest_acc_id):
+def add_transaction_callback(n_clicks, date_val, time_val, name, amount, category, t_type, acc_id, subcat, dest_acc_id): # <--- Agrega time_val
     df = dm.get_transactions_df()
     if not n_clicks: return "", generate_table(df), no_update, no_update
 
@@ -467,6 +484,10 @@ def add_transaction_callback(n_clicks, date_val, name, amount, category, t_type,
     if not all([date_val, amount, t_type, acc_id]):
         return html.Span("Faltan campos obligatorios.", className="text-danger"), generate_table(df), no_update, no_update
     
+    # --- COMBINAR FECHA Y HORA ---
+    final_time = time_val if time_val else "00:00"
+    full_date_str = f"{date_val} {final_time}"
+
     try: amt = float(amount)
     except: return html.Span("Monto inválido", className="text-danger"), generate_table(df), no_update, no_update
     
