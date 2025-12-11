@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 /* -----------------------------------------------------------------------------
  * SISTEMA DE TEMAS - VARIABLES CSS (SOLO COLORES DEL MODO OSCURO)
  * -------------------------------------------------------------------------- */
@@ -258,265 +257,37 @@ h1, h2, h3, h4, h5, h6 {
 /* G) Iconos (Flecha y X) */
 .Select-arrow-zone, .Select-clear-zone {
     filter: invert(1) brightness(0.8); /* Los hace blancos */
-=======
-/* -----------------------------------------------------------------------------
- * SISTEMA DE TEMAS - VARIABLES CSS (SOLO COLORES DEL MODO OSCURO)
- * -------------------------------------------------------------------------- */
+}
 
-:root {
-    /* --- HIGH CONTRAST MODERN DARK THEME --- */
-    --bg-body: #121212;     /* Fondo de la página: Gris muy oscuro (Casi negro) */
-    --bg-sidebar: #1a1a1a;  /* Fondo del Offcanvas/Sidebar: Negro suave */
-    --bg-card: #1a1a1a;     /* Fondo de cards: Negro suave */
-    --bg-card-hover: #2a2a2a;
+/* --- ESTILOS PARA HEATMAP DE INVERSIONES (Invertido: Color -> Base) --- */
+
+/* Ganancia Diaria (Positivo) */
+.bg-heatmap-positive {
+    /* Empieza con verde oscuro (0%) y se funde hacia el color base de la carta */
+    background: linear-gradient(160deg, #0f2e16 0%, var(--bg-card) 85%) !important;
     
-    --text-main: #FFFFFF;   /* Texto principal: Blanco puro */
-    --text-header: #FFFFFF;
-    --text-muted: #aaaaaa;  /* Gris claro para texto secundario */
+    /* Borde verde oscuro sutil */
+    border: 1px solid #1e4d2b !important; 
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Pérdida Diaria (Negativo) */
+.bg-heatmap-negative {
+    /* Empieza con rojo oscuro (0%) y se funde hacia el color base de la carta */
+    background: linear-gradient(160deg, #2e0f0f 0%, var(--bg-card) 85%) !important;
     
-    --border-color: #333333; /* Borde y línea de inputs */
-    --divider-color: #444444; /* Líneas divisorias */
-    
-    /* Inputs y Dropdowns */
-    --input-bg: #2a2a2a; 
-    --input-text: #fff;
-    --input-border: #444;
-
-    --shadow: rgba(0, 0, 0, 0.7);
-    
-    /* Colores primarios de la app (Azul y Verde para resaltar) */
-    --primary-color: #5bc0de; /* Azul Info para links y activo */
-    --success-color: #4CAF50; /* Verde material */
-    --danger-color: #f44336;  /* Rojo material */
+    /* Borde rojo oscuro sutil */
+    border: 1px solid #4d1e1e !important;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
-/* -----------------------------------------------------------------------------
- * ESTILOS GLOBALES BASE
- * -------------------------------------------------------------------------- */
-
-body, html {
-    background-color: var(--bg-body) !important;
-    color: var(--text-main) !important;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-}
-
-h1, h2, h3, h4, h5, h6 {
-    color: var(--text-header) !important;
-}
-
-/* --- CONTENIDO PRINCIPAL (main-content) --- */
-.main-content {
-    /* **Corrección de Margen:** Aumentar el margen superior para evitar solapamiento. */
-    padding-top: 75px; 
-    padding-left: 30px; 
-    padding-right: 30px;
-    min-height: 100vh;
-}
-
-/* --- TARJETAS (Efecto flotante y bordes redondeados) --- */
-.card, .data-card, .metric-card {
-    background-color: var(--bg-card) !important;
-    border: 1px solid var(--border-color) !important;
-    box-shadow: 0 6px 15px var(--shadow) !important;
-    color: var(--text-main) !important;
-    border-radius: 12px;
-}
-.zoom-on-hover:hover {
+/* Efecto Hover (Se mantiene igual) */
+.bg-heatmap-positive:hover {
+    box-shadow: 0 8px 20px rgba(20, 100, 40, 0.2) !important;
     transform: translateY(-3px);
-    transition: all 0.3s ease;
 }
 
-/* --- INPUTS Y DROPDOWNS (Estilos Generales) --- */
-.form-control, .form-select {
-    background-color: var(--input-bg) !important;
-    border-color: var(--input-border) !important;
-    color: var(--input-text) !important;
-    border-radius: 8px !important;
-}
-.form-control::placeholder {
-    color: var(--text-muted) !important;
-    opacity: 0.8;
-}
-
-/* --- TEXTOS Y COLORES --- */
-.text-muted { color: var(--text-muted) !important; }
-.text-info { color: var(--primary-color) !important; }
-.text-success { color: var(--success-color) !important; }
-.text-danger { color: var(--danger-color) !important; }
-.text-warning { color: #ff9800 !important; } /* Naranja */
-
-
-/* -----------------------------------------------------------------------------
- * ESTILOS DE COMPONENTES ÚNICOS
- * -------------------------------------------------------------------------- */
-
-/* 1. NAVBAR (Header) - GRADIENTE PROFESIONAL */
-#main-navbar {
-    padding-top: 5px !important;
-    padding-bottom: 5px !important;
-    background: linear-gradient(to right, #2c3e50, #2c3e50, #1a1a1a) !important; 
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.7) !important;
-    border-bottom: none; 
-}
-
-#main-navbar .navbar-brand.text-white {
-    font-size: 1.5rem !important;
-    font-weight: 500 !important;
-}
-
-/* 2. OFFCANVAS/SIDEBAR */
-.offcanvas-custom {
-    background-color: var(--bg-sidebar) !important; 
-    color: var(--text-main) !important;
-    box-shadow: 4px 0 10px rgba(0, 0, 0, 0.7) !important;
-    width: 280px !important; 
-}
-.offcanvas-custom .offcanvas-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 1rem 1.5rem 0.5rem 1.5rem !important; 
-    border-bottom: none !important; 
-}
-
-.offcanvas-header-title-custom {
-    color: white !important;
-    font-size: 2.2rem !important; 
-    font-weight: 700 !important;
-    margin: 0 !important;
-}
-
-.offcanvas-custom .offcanvas-title {
-    display: none;
-}
-
-.offcanvas-custom .btn-close {
-    filter: invert(100%) !important; 
-    opacity: 1;
-}
-
-/* 3. NAVEGACIÓN EN OFFCANVAS */
-.offcanvas-custom .nav-link {
-    color: var(--text-main) !important; 
-    border-radius: 8px;
-    padding: 12px 15px;
-    margin: 5px 0;
-    transition: background-color 0.2s ease;
-}
-.offcanvas-custom .nav-link:hover {
-    background-color: var(--bg-card-hover) !important;
-    color: var(--primary-color) !important;
-}
-.offcanvas-custom .nav-link.active {
-    background-color: var(--primary-color) !important;
-    color: white !important;
-    font-weight: bold;
-}
-.offcanvas-custom .sidebar-divider {
-    border-top: 1px solid var(--divider-color) !important;
-    opacity: 0.5;
-}
-.offcanvas-custom label {
-    color: var(--text-muted) !important;
-}
-
-/* 4. TABLAS (Dash DataTable) - Alto Contraste */
-.dash-spreadsheet-container {
-    border-radius: 10px;
-    border: 1px solid var(--border-color) !important;
-    background-color: var(--bg-card) !important;
-}
-.dash-header {
-    background-color: #333 !important;
-    color: white !important;
-    font-weight: bold;
-    border-top: 1px solid var(--divider-color) !important;
-}
-.dash-header, .dash-cell {
-    border: 1px solid var(--divider-color) !important;
-}
-.dash-cell {
-    background-color: var(--bg-card) !important;
-    color: var(--text-main) !important;
-}
-
-/* FORZAR VISIBILIDAD DE ÍCONOS DE MENÚ Y CERRAR */
-#open-offcanvas-btn i {
-    color: white !important; 
-}
-
-/* 5. ARREGLO DE SCROLLBAR */
-::-webkit-scrollbar {
-    width: 8px; 
-    background-color: transparent; 
-}
-::-webkit-scrollbar-thumb {
-    background-color: #666;
-    border-radius: 4px;
-}
-
-/* --------------------------------------------------------------------------
- * 6. FIX DROPDOWNS (DCC DROPDOWN) - VERSIÓN CORREGIDA PARA TU TEMA
- * -------------------------------------------------------------------------- */
-
-/* A) El cuadro del input principal */
-.Select-control {
-    background-color: var(--input-bg) !important;
-    border: 1px solid var(--border-color) !important;
-    border-radius: 8px !important;
-    color: var(--input-text) !important;
-}
-
-/* B) Texto seleccionado (el que se ve al cerrar el menú) */
-.Select-value-label, .Select-placeholder, .Select-input > input {
-    color: var(--input-text) !important;
-}
-
-/* C) El contenedor desplegable (la caja que se abre) */
-.Select-menu-outer {
-    background-color: var(--input-bg) !important;
-    border: 1px solid var(--border-color) !important;
-    box-shadow: 0 5px 15px var(--shadow) !important;
-    margin-top: 4px !important;
-    z-index: 9999 !important; /* Siempre encima */
-}
-
-/* D) LAS OPCIONES DE LA LISTA (Aquí corregimos el error) */
-.VirtualisedSelectOption {
-    padding: 8px 12px !important; /* Un poco menos de padding vertical */
-    border-bottom: 1px solid var(--border-color) !important;
-    
-    /* FLEXBOX para aprovechar los 65px de altura */
-    display: flex !important;
-    flex-direction: column !important;
-    justify-content: center !important; /* Centra el bloque de texto verticalmente */
-    
-    line-height: 1.3 !important;
-    white-space: normal !important;
-    
-    /* IMPORTANTE: Ya no usamos height: auto, dejamos que Python controle la altura */
-    height: 100% !important; 
-    
-    color: var(--text-muted) !important;
-    background-color: var(--input-bg) !important;
-    transition: background 0.2s ease;
-}
-/* E) Hover sobre una opción */
-.VirtualisedSelectOption.Select-option.is-focused {
-    background-color: var(--bg-card-hover) !important;
-    color: var(--text-main) !important;
-    border-left: 3px solid var(--success-color) !important; /* Toque verde elegante */
-}
-
-/* F) Opción seleccionada actualmente */
-.Select-option.is-selected {
-    background-color: #111 !important;
-    color: var(--success-color) !important;
-    font-weight: bold;
-}
-
-/* G) Iconos (Flecha y X) */
-.Select-arrow-zone, .Select-clear-zone {
-    filter: invert(1) brightness(0.8); /* Los hace blancos */
->>>>>>> b74f1b0a886c27181c8264a954a4baf9f2b71029
+.bg-heatmap-negative:hover {
+    box-shadow: 0 8px 20px rgba(100, 20, 20, 0.2) !important;
+    transform: translateY(-3px);
 }
