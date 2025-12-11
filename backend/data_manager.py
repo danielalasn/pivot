@@ -1,7 +1,7 @@
 import sqlite3
 import pandas as pd
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import calendar
 import finnhub
 import time
@@ -62,7 +62,8 @@ def clear_all_caches():
         cache.delete_memoized(_get_savings_goals_df_cached)
         cache.delete_memoized(_get_distribution_rules_cached)
         cache.delete_memoized(_get_income_events_df_cached)
-        
+        cache.delete_memoized(_get_full_networth_history_cached)
+        capture_daily_snapshot()
         print("🧹 Caché limpiado: Datos frescos listos.")
     except Exception as e:
         print(f"⚠️ Error limpiando caché: {e}")
@@ -1495,7 +1496,7 @@ def get_stocks_data(force_refresh=False):
 
 
 def get_data_timestamp():
-    """Devuelve la fecha más reciente de actualización."""
+    """Devuelve la fecha más reciente convertida a la hora local del sistema."""
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -1517,12 +1518,24 @@ def get_data_timestamp():
         
         if res and res[0]:
             try:
-                # Intentar parsear con microsegundos (formato común Postgres)
-                dt = datetime.strptime(str(res[0]).split('.')[0], '%Y-%m-%d %H:%M:%S')
-            except:
-                # Fallback formato simple
-                dt = datetime.strptime(str(res[0]), '%Y-%m-%d %H:%M:%S')
-            return dt.strftime('%d/%m %H:%M')
+                # 1. Obtener string limpio (sin microsegundos)
+                raw_ts = str(res[0]).split('.')[0]
+                
+                # 2. Convertir a objeto Datetime
+                dt_obj = datetime.strptime(raw_ts, '%Y-%m-%d %H:%M:%S')
+                
+                # 3. Asignar origen UTC (La base de datos guarda en UTC)
+                dt_utc = dt_obj.replace(tzinfo=timezone.utc)
+                
+                # 4. CONVERTIR A HORA LOCAL DEL SISTEMA
+                # .astimezone(None) usa la configuración de tu computadora
+                dt_local = dt_utc.astimezone(None)
+                
+                return dt_local.strftime('%d/%m %H:%M')
+            except Exception as e:
+                # Fallback por si falla la conversión
+                print(f"Error timezone: {e}")
+                return str(res[0])
         return "Sin datos"
     except Exception as e:
         return "Error"
@@ -1705,80 +1718,151 @@ def import_historical_data(df):
 
 # backend/data_manager.py
 
-def get_historical_networth_trend(start_date=None, end_date=None):
-    """Historial HÍBRIDO: Calculado (Reciente) + Importado (Antiguo) con corrección de Variación."""
-    conn = get_connection()
-    uid = get_uid()
-    try:
-        # A. OBTENER DATOS CALCULADOS (Desde transacciones)
-        current_nw = get_net_worth_breakdown()['net_worth']
-        today = date.today()
-        
-        df_trans = pd.read_sql_query("SELECT date, amount, type FROM transactions WHERE user_id = ?", conn, params=(uid,))
-        
-        df_calc = pd.DataFrame()
-        
-        if not df_trans.empty:
-            # 🚨 CORRECCIÓN AQUÍ: Agregamos format='mixed'
-            df_trans['date'] = pd.to_datetime(df_trans['date'], format='mixed').dt.date
-            
-            min_db_date = df_trans['date'].min()
-            
-            calc_start = min_db_date
-            calc_end = today
-            
-            daily_changes = df_trans.groupby(['date', 'type'])['amount'].sum().unstack(fill_value=0)
-            if 'Income' not in daily_changes.columns: daily_changes['Income'] = 0
-            if 'Expense' not in daily_changes.columns: daily_changes['Expense'] = 0
-            
-            daily_changes['net_change'] = daily_changes['Income'] - daily_changes['Expense']
-            
-            full_idx = pd.date_range(start=calc_start, end=calc_end).date
-            df_calc = pd.DataFrame(index=full_idx)
-            df_calc.index.name = 'date'
-            
-            df_calc = df_calc.join(daily_changes['net_change']).fillna(0)
-            df_calc = df_calc.sort_index(ascending=False)
-            
-            cumulative_changes = df_calc['net_change'].cumsum()
-            df_calc['net_worth'] = current_nw - cumulative_changes + df_calc['net_change']
-            df_calc = df_calc.sort_index().reset_index() # Ascendente
-            df_calc = df_calc[['date', 'net_worth']]
+# --- OPTIMIZACIÓN HISTORIAL PATRIMONIO ---
 
-        # B. OBTENER DATOS IMPORTADOS (Excel)
-        df_imported = pd.read_sql_query("SELECT date, net_worth FROM historical_net_worth WHERE user_id = ? ORDER BY date ASC", conn, params=(uid,))
+@cache.memoize(timeout=300)
+def _get_full_networth_history_cached(user_id):
+    """
+    Construye el historial usando la lógica 'Forward Fill':
+    Los huecos sin datos asumen el valor del último día conocido.
+    El valor de HOY siempre se calcula en vivo.
+    """
+    conn = get_connection()
+    try:
+        # 1. Obtener Histórico CONGELADO de la Base de Datos
+        # Estos son los días que ya guardamos y no deben cambiar
+        df_db = pd.read_sql_query(
+            "SELECT date, net_worth FROM historical_net_worth WHERE user_id = ? ORDER BY date ASC", 
+            conn, params=(user_id,)
+        )
         
-        if not df_imported.empty:
-            # 🚨 CORRECCIÓN AQUÍ TAMBIÉN (Por seguridad): Agregamos format='mixed'
-            df_imported['date'] = pd.to_datetime(df_imported['date'], format='mixed').dt.date
-            
-            # Si hay overlap, damos prioridad al cálculo automático (datos recientes)
-            if not df_calc.empty:
-                min_calc_date = df_calc['date'].min()
-                df_imported = df_imported[df_imported['date'] < min_calc_date]
+        # Asegurar formato fecha
+        if not df_db.empty:
+            df_db['date'] = pd.to_datetime(df_db['date']).dt.date
+
+        # 2. Calcular el Valor EN VIVO de Hoy
+        # (Para ver cómo se mueven mis acciones ahora mismo)
+        nw_data = get_net_worth_breakdown(force_refresh=False)
+        current_val = nw_data['net_worth']
+        today_date = date.today()
+
+        # 3. Integrar "Hoy" al DataFrame
+        # Si ya existe un registro de hoy en DB (porque se guardó snapshot hace rato),
+        # lo sobrescribimos con el valor en vivo para el gráfico.
+        row_today = pd.DataFrame([{'date': today_date, 'net_worth': current_val}])
         
-        # C. UNIÓN FINAL Y CÁLCULO DE VARIACIÓN
-        df_final = pd.concat([df_imported, df_calc], ignore_index=True)
+        if df_db.empty:
+            df_final = row_today
+        else:
+            # Eliminar si ya existe hoy para poner la versión más fresca
+            df_db = df_db[df_db['date'] < today_date]
+            df_final = pd.concat([df_db, row_today], ignore_index=True)
+
+        # 4. RELLENO DE HUECOS (Forward Fill) - LA PARTE CLAVE
+        # Creamos un índice con TODOS los días desde el inicio hasta hoy
+        min_date = df_final['date'].min()
+        idx = pd.date_range(min_date, today_date)
         
-        # 1. Ordenamos por fecha
-        df_final = df_final.sort_values('date').drop_duplicates(subset=['date'], keep='last')
+        # Indexamos por fecha
+        df_final = df_final.set_index('date')
         
-        # 2. CÁLCULO AUTOMÁTICO DE VARIACIÓN
+        # Reindexamos para crear las filas vacías de los días que no entraste
+        df_final = df_final.reindex(idx.date)
+        
+        # ffill(): Copia el valor anterior hacia adelante en los huecos
+        df_final['net_worth'] = df_final['net_worth'].ffill()
+        
+        # Reset index para devolver formato normal
+        df_final = df_final.reset_index().rename(columns={'index': 'date'})
+        
+        # Calcular variación diaria (net_change) sobre la serie ya rellena
         df_final['net_change'] = df_final['net_worth'].diff().fillna(0)
         
-        # Filtrar por fechas solicitadas por el usuario
-        if start_date:
-            s_date = pd.to_datetime(start_date).date()
-            df_final = df_final[df_final['date'] >= s_date]
-        
-        if end_date:
-            e_date = pd.to_datetime(end_date).date()
-            df_final = df_final[df_final['date'] <= e_date]
-            
         return df_final
 
+    except Exception as e:
+        print(f"Error calculando historial ffill: {e}")
+        return pd.DataFrame()
     finally:
         conn.close()
+
+    
+
+# --- EN backend/data_manager.py ---
+
+# --- EN backend/data_manager.py ---
+
+def capture_daily_snapshot():
+    """
+    Calcula el Patrimonio Neto ACTUAL y lo guarda/actualiza en la base de datos
+    para la fecha de hoy. Esto 'congela' la historia día a día.
+    """
+    conn = get_connection()
+    try:
+        # 1. Obtener el valor real de HOY
+        # force_refresh=False para usar precios de acciones cacheados y no hacer lenta la app
+        data = get_net_worth_breakdown(force_refresh=False)
+        current_nw = data['net_worth']
+        
+        date_str = date.today().strftime('%Y-%m-%d')
+        uid = get_uid()
+        
+        cursor = conn.cursor()
+        
+        # 2. Verificar si ya existe registro de hoy
+        cursor.execute("SELECT id FROM historical_net_worth WHERE user_id = ? AND date = ?", (uid, date_str))
+        row = cursor.fetchone()
+        
+        if row:
+            # ACTUALIZAR: El día no ha acabado, seguimos ajustando el valor de hoy
+            cursor.execute("UPDATE historical_net_worth SET net_worth = ? WHERE id = ?", (current_nw, row[0]))
+        else:
+            # INSERTAR: Primer movimiento del día
+            cursor.execute("INSERT INTO historical_net_worth (user_id, date, net_worth) VALUES (?, ?, ?)", (uid, date_str, current_nw))
+            
+        conn.commit()
+        
+        # 3. Importante: Limpiar caché del historial para que el gráfico se actualice
+        # Usamos delete_memoized directamente sobre la función interna
+        try:
+            cache.delete_memoized(_get_full_networth_history_cached)
+        except:
+            pass
+            
+    except Exception as e:
+        print(f"⚠️ Error en auto-snapshot: {e}")
+    finally:
+        conn.close()
+
+
+# --- EN backend/data_manager.py ---
+
+def get_historical_networth_trend(start_date=None, end_date=None):
+    """
+    Función LIGERA: Solo filtra el DataFrame que ya está en memoria.
+    CORREGIDA: Maneja correctamente la comparación entre Timestamp y datetime.date.
+    """
+    uid = get_uid()
+    
+    # 1. Llamada instantánea al Caché
+    df = _get_full_networth_history_cached(uid)
+    
+    if df.empty: return df
+    
+    # 2. Filtrado Rápido en Memoria
+    # El DataFrame 'df' viene con la columna 'date' como objetos datetime.date (por la lógica del ffill)
+    # Por lo tanto, debemos convertir start_date y end_date a .date() antes de comparar.
+    
+    if start_date:
+        # pd.to_datetime convierte string a Timestamp, y .date() lo pasa al formato compatible
+        s_date = pd.to_datetime(start_date).date()
+        df = df[df['date'] >= s_date]
+    
+    if end_date:
+        e_date = pd.to_datetime(end_date).date()
+        df = df[df['date'] <= e_date]
+        
+    return df
 
 def _get_price_finnhub(ticker_symbol, avg_price_fallback=0):
     """
@@ -2923,33 +3007,24 @@ def update_last_login(user_id):
 
 # backend/data_manager.py
 
+# En backend/data_manager.py
+
 def register_user(username, password, email, display_name=None):
     conn = get_connection()
     cursor = conn.cursor()
     
-    # 1. Limpieza de datos (SAFE)
-    # Validamos que username exista, si no, cadena vacía (aunque el frontend ya valida)
     clean_username = username.strip().lower() if username else ""
-    
-    # --- CORRECCIÓN AQUÍ ---
-    # Si email es None (vacío), usamos cadena vacía "" para evitar el error .strip()
     clean_email = email.strip().lower() if email else "" 
-    # -----------------------
-    
-    # Si no dan display_name, usamos el username capitalizado
     clean_display = display_name.strip() if display_name else clean_username.capitalize()
     
     try:
-        # Validación básica de usuario requerido
-        if not clean_username:
-            return False, "El nombre de usuario es obligatorio."
+        if not clean_username: return False, "El nombre de usuario es obligatorio."
 
         cursor.execute("SELECT id FROM users WHERE username = ?", (clean_username,))
         if cursor.fetchone(): return False, "El usuario ya existe."
 
         hashed_pw = generate_password_hash(password.strip(), method='pbkdf2:sha256')
         
-        # Insertamos (clean_email será "" si estaba vacío, lo cual es válido como texto)
         cursor.execute("""
             INSERT INTO users (username, password_hash, email, display_name, created_at) 
             VALUES (?, ?, ?, ?, date('now'))
@@ -2957,23 +3032,33 @@ def register_user(username, password, email, display_name=None):
         
         new_uid = cursor.lastrowid
         
-        # --- NUEVAS CATEGORÍAS POR DEFECTO ---
-        # Formato: (Nombre, is_excluded)
-        # 0 = Se muestra en gráficas (Ingreso/Gasto real)
-        # 1 = Se oculta (Movimiento de balance, Deuda, Transferencia interna)
+        # --- CATEGORÍAS POR DEFECTO (Las que pediste) ---
+        # 0 = Visible, 1 = Oculta (Sistema)
         default_cats = [
-            ('Salario', 0),
             ('Libres', 0),
             ('Costos Fijos', 0),
-            ('Inversion', 0), 
             ('Ahorro', 0),
-            ('Deuda/Cobro', 1),      # Excluido (Movimiento de Pasivo/Activo)
-            ('Transferencia', 1),    # Excluido (Sistema interno obligatorio)
-            ('Transferencia/Pago', 1)# Excluido (Sistema interno obligatorio)
+            ('Deuda/Cobro', 0),  # La pediste visible o sistema? (0 visible)
+            ('Salario', 0),
+            ('Inversion', 0),
+            # Categorías técnicas necesarias para que el sistema no falle
+            ('Transferencia', 1),    
+            ('Transferencia/Pago', 1)
         ]
         
-        cursor.executemany("INSERT INTO categories (name, user_id, is_excluded) VALUES (?, ?, ?)", 
-                           [(c[0], new_uid, c[1]) for c in default_cats])
+        # Insertamos una por una para evitar problemas de drivers con executemany en algunos entornos
+        for name, is_excl in default_cats:
+            # Usamos INSERT ... ON CONFLICT DO NOTHING para Postgres (o IGNORE en SQLite)
+            # Como Python no sabe cuál DB es, hacemos un try-except interno simple
+            try:
+                cursor.execute(
+                    "INSERT INTO categories (name, user_id, is_excluded) VALUES (?, ?, ?)", 
+                    (name, new_uid, is_excl)
+                )
+            except Exception as e:
+                # Si falla por duplicado (aunque con el fix de DB no debería), lo ignoramos y seguimos
+                print(f"Nota al crear categoría '{name}': {e}")
+                pass
         
         conn.commit()
         return True, "Usuario registrado."
@@ -2983,7 +3068,6 @@ def register_user(username, password, email, display_name=None):
     finally:
         conn.close()
 
-# backend/data_manager.py
 
 def get_excluded_categories_list():
     """Retorna una lista de nombres de categorías que deben excluirse de los gráficos."""
@@ -3940,8 +4024,10 @@ def manual_price_refresh():
         
         # 3. Evaluar resultados
         if success_count == len(tickers):
+            clear_all_caches()
             return True, f"Precios actualizados ({success_count}/{len(tickers)})."
         elif success_count > 0:
+            clear_all_caches()
             return True, f"Actualización parcial. Fallaron {len(errors)} activos."
         else:
             # Si fallaron todos, probablemente es error de conexión o límite de API

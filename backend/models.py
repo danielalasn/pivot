@@ -1,62 +1,72 @@
-# backend/models.py
-import sqlite3
 from flask_login import UserMixin
-from werkzeug.security import check_password_hash # <--- Faltaba esta importación importante
-from backend.data_manager import DB_PATH
+from werkzeug.security import check_password_hash
+from backend.data_manager import get_connection
 
 class User(UserMixin):
-    def __init__(self, id, username, email, display_name=None):
+    def __init__(self, id, username, email, display_name):
         self.id = str(id)
         self.username = username
         self.email = email
-        # Si no hay display_name, usamos el username como fallback
-        self.display_name = display_name if display_name else username
+        self.display_name = display_name
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def verify_user(username, password):
+    """
+    Busca el usuario por username y verifica el hash del password.
+    """
+    conn = get_connection()
+    # Usamos cursor() para aprovechar el Wrapper que convierte ? a %s si es necesario
+    cursor = conn.cursor()
+    
+    try:
+        # 1. Buscar usuario en la DB
+        # Es vital seleccionar el campo 'password_hash'
+        cursor.execute("""
+            SELECT id, username, email, display_name, password_hash 
+            FROM users 
+            WHERE username = ?
+        """, (username,))
+        
+        data = cursor.fetchone()
+
+        if not data:
+            return None # Usuario no encontrado
+
+        # Desempaquetar los datos (El orden coincide con el SELECT: 0, 1, 2, 3, 4)
+        uid = data[0]
+        u_name = data[1]
+        email = data[2]
+        display = data[3]
+        stored_hash = data[4]
+
+        # 2. Verificar Contraseña
+        if stored_hash and check_password_hash(stored_hash, password):
+            return User(uid, u_name, email, display)
+        
+        return None # Contraseña incorrecta
+
+    except Exception as e:
+        print(f"❌ Error en verify_user: {e}")
+        return None
+    finally:
+        conn.close()
 
 def get_user_by_id(user_id):
-    conn = get_db_connection()
+    """Necesario para Flask-Login (load_user)."""
+    conn = get_connection()
     cursor = conn.cursor()
-    # Seleccionamos id, username, email y display_name
-    cursor.execute("SELECT id, username, email, display_name FROM users WHERE id = ?", (user_id,))
-    user_data = cursor.fetchone()
-    conn.close()
-
-    if user_data:
-        return User(
-            id=user_data['id'], 
-            username=user_data['username'], 
-            email=user_data['email'],
-            display_name=user_data['display_name']
-        )
-    return None
-
-def get_user_by_username(username):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    # Seleccionamos también password_hash para poder verificar el login
-    cursor.execute("SELECT id, username, email, password_hash, display_name FROM users WHERE username = ?", (username,))
-    user_data = cursor.fetchone()
-    conn.close()
-
-    if user_data:
-        user = User(
-            id=user_data['id'], 
-            username=user_data['username'], 
-            email=user_data['email'],
-            display_name=user_data['display_name']
-        )
-        # Guardamos el hash temporalmente en el objeto para usarlo en verify_user
-        user.password_hash = user_data['password_hash']
-        return user
-    return None
-
-# --- ESTA ES LA FUNCIÓN QUE FALTABA ---
-def verify_user(username, password):
-    user = get_user_by_username(username)
-    if user and check_password_hash(user.password_hash, password):
-        return user
-    return None
+    try:
+        cursor.execute("""
+            SELECT id, username, email, display_name 
+            FROM users 
+            WHERE id = ?
+        """, (user_id,))
+        data = cursor.fetchone()
+        
+        if data:
+            # Retornamos el objeto User usando los índices de la tupla
+            return User(data[0], data[1], data[2], data[3])
+        return None
+    except:
+        return None
+    finally:
+        conn.close()
