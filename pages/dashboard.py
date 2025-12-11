@@ -282,6 +282,7 @@ def load_date_preference(saved_option):
     prevent_initial_call=True
 )
 def manual_dashboard_refresh(n_clicks, signal):
+    # print(f"BOTÓN PRESIONADO. Clicks: {n_clicks}")
     if not n_clicks: return no_update, no_update, no_update, no_update, no_update
     success, msg = dm.manual_price_refresh()
     new_signal = (signal or 0) + 1

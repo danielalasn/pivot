@@ -398,7 +398,29 @@ def get_account_type_summary():
         conn.close()
     return summary
 
+# --- EN backend/data_manager.py ---
 
+def batch_update_account_orders(id_list):
+    """
+    Recibe una lista de IDs [id1, id2, id3...] en el orden deseado
+    y actualiza el campo display_order en la base de datos.
+    """
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        cursor = conn.cursor()
+        # Iteramos y actualizamos el orden según la posición en la lista
+        for index, acc_id in enumerate(id_list):
+            cursor.execute(
+                "UPDATE accounts SET display_order = ? WHERE id = ? AND user_id = ?", 
+                (index + 1, acc_id, uid)
+            )
+        conn.commit()
+        return True, "Orden guardado."
+    except Exception as e:
+        return False, str(e)
+    finally:
+        conn.close()
 
 def get_debit_category_summary():
     """Obtiene la suma de transacciones por categoría y tipo (Expense/Income) 

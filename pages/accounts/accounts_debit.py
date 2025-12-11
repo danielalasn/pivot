@@ -8,6 +8,13 @@ import plotly.graph_objects as go
 import pandas as pd
 
 # --- MODALES ---
+reorder_modal = dbc.Modal([
+    dbc.ModalHeader("Organizar Cuentas"),
+    dbc.ModalBody(dbc.ListGroup(id="deb-reorder-list", flush=True)), # Aquí cargaremos la lista simple
+    dbc.ModalFooter(
+        dbc.Button("Listo", id="deb-btn-reorder-done", color="primary", className="ms-auto")
+    )
+], id="deb-reorder-modal", is_open=False, centered=True, scrollable=True)
 
 # Modal 1: Detalles (Ver)
 detail_modal = dbc.Modal([
@@ -88,8 +95,10 @@ layout = dbc.Card([
         dcc.Store(id='deb-editing-id', data=None),
         dcc.Store(id='deb-delete-id', data=None),
         dcc.Store(id='deb-update-signal', data=0),
+        dcc.Store(id='deb-reorder-temp-store', data=[]),
         
         # Inclusión de Modales
+        reorder_modal,
         detail_modal,
         delete_modal,
         add_account_modal,
@@ -124,12 +133,18 @@ layout = dbc.Card([
         # --- BARRA DE HERRAMIENTAS (BUSCADOR + BOTÓN AGREGAR) ---
         dbc.Row([
             dbc.Col(
-                dbc.Input(id="deb-search-input", placeholder="🔍 Buscar cuenta por nombre...", type="text"),
-                width=8, lg=9, className="mb-3"
+                dbc.Input(id="deb-search-input", placeholder="🔍 Buscar cuenta...", type="text"),
+                width=7, lg=8, className="mb-3"
             ),
+            # Botón Organizar (NUEVO)
             dbc.Col(
-                dbc.Button("+ Agregar Cuenta", id="btn-open-add-account", color="primary", className="w-100 fw-bold"),
-                width=4, lg=3, className="mb-3"
+                dbc.Button(html.I(className="bi bi-arrow-down-up"), id="btn-open-reorder", color="secondary", outline=True, className="w-100"),
+                width=2, lg=1, className="mb-3 px-1"
+            ),
+            # Botón Agregar (EXISTENTE)
+            dbc.Col(
+                dbc.Button("+ Agregar", id="btn-open-add-account", color="primary", className="w-100 fw-bold"),
+                width=3, lg=3, className="mb-3"
             ),
         ], className="align-items-center mb-2"),
 
@@ -180,10 +195,6 @@ def deb_load_cards(msg, path, search_term):
         bank_display = row['bank_name'] if row['type'] != "Cash" else "EFECTIVO"
         saldo_fmt = f"${row['current_balance']:,.2f}"
 
-        # Botones de Orden (Horizontales)
-        up_btn = dbc.Button("◀", id={'type': 'deb-up', 'index': row['id']}, size="sm", color="link", className="p-0 text-decoration-none text-muted me-1")
-        down_btn = dbc.Button("▶", id={'type': 'deb-down', 'index': row['id']}, size="sm", color="link", className="p-0 text-decoration-none text-muted")
-
         # DISEÑO DE TARJETA (BOX)
         card_content = dbc.Card([
             dbc.CardBody([
@@ -191,7 +202,6 @@ def deb_load_cards(msg, path, search_term):
                 dbc.Row([
                     dbc.Col(html.Div(icon, className="h5 mb-0"), width="auto"),
                     dbc.Col(html.Small(bank_display, className="text-muted fw-bold text-uppercase small"), className="d-flex align-items-center"),
-                    dbc.Col([up_btn, down_btn], width="auto", className="text-end")
                 ], className="mb-3 align-items-center"),
                 
                 # Nombre de la Cuenta
@@ -368,3 +378,115 @@ def update_debit_dashboard(pathname, msg):
         fig_account_name.update_traces(textinfo='percent+label')
 
     return fig_bank, fig_account_name
+
+# --- CALLBACKS PARA REORDENAR (Lógica en Memoria) ---
+
+# 1. ABRIR MODAL E INICIALIZAR EL STORE (Carga datos de DB)
+@callback(
+    [Output("deb-reorder-modal", "is_open"), 
+     Output("deb-reorder-temp-store", "data")], 
+    [Input("btn-open-reorder", "n_clicks"), 
+     Input("deb-btn-reorder-done", "n_clicks")],
+    State("deb-reorder-modal", "is_open"),
+    prevent_initial_call=True
+)
+def toggle_reorder_modal_init(n_open, n_done, is_open):
+    trig = ctx.triggered_id
+    
+    # CERRAR: Si apretamos "Listo"
+    if trig == "deb-btn-reorder-done":
+        return False, no_update
+
+    # ABRIR: Cargamos datos frescos de la DB al Store
+    if trig == "btn-open-reorder":
+        df = dm.get_accounts_by_category("Debit")
+        # Guardamos: [{'id': 1, 'name': 'Ahorro', 'bank_name': 'BAC'}, ...]
+        data_list = df[['id', 'name', 'bank_name']].to_dict('records')
+        return True, data_list
+
+    return no_update, no_update
+
+
+# 2. MOVER ITEMS ARRIBA/ABAJO (Solo modifica el Store, NO la DB)
+@callback(
+    Output("deb-reorder-temp-store", "data", allow_duplicate=True),
+    [Input({'type': 'deb-reorder-up', 'index': ALL}, 'n_clicks'), 
+     Input({'type': 'deb-reorder-down', 'index': ALL}, 'n_clicks')],
+    State("deb-reorder-temp-store", "data"),
+    prevent_initial_call=True
+)
+def update_temp_order_store(n_up, n_down, current_data):
+    if not ctx.triggered or not current_data: return no_update
+    
+    trig_dict = ctx.triggered_id
+    clicked_id = trig_dict['index']
+    direction = 'up' if trig_dict['type'] == 'deb-reorder-up' else 'down'
+    
+    # Buscar índice
+    idx = next((i for i, item in enumerate(current_data) if item['id'] == clicked_id), -1)
+    if idx == -1: return no_update
+
+    new_data = current_data.copy()
+    
+    # Swap Arriba
+    if direction == 'up' and idx > 0:
+        new_data[idx], new_data[idx-1] = new_data[idx-1], new_data[idx]
+    
+    # Swap Abajo
+    elif direction == 'down' and idx < len(new_data) - 1:
+        new_data[idx], new_data[idx+1] = new_data[idx+1], new_data[idx]
+        
+    return new_data
+
+
+# 3. RENDERIZAR LISTA VISUAL (Escucha cambios en el Store)
+@callback(
+    Output("deb-reorder-list", "children"),
+    Input("deb-reorder-temp-store", "data")
+)
+def render_reorder_list_visual(data_list):
+    if not data_list: return []
+    
+    items = []
+    for item in data_list:
+        # Mostrar Banco visualmente
+        bank_label = item.get('bank_name', '')
+        if bank_label == '-': bank_label = 'Efectivo'
+        
+        li = dbc.ListGroupItem([
+            dbc.Row([
+                # Nombre y Banco
+                dbc.Col([
+                    html.Span(item['name'], className="fw-bold d-block"),
+                    html.Small(bank_label, className="text-muted fst-italic") 
+                ], width=True),
+                
+                # Botones Flechas
+                dbc.Col([
+                    dbc.Button("▲", id={'type': 'deb-reorder-up', 'index': item['id']}, size="sm", color="light", className="me-1 border"),
+                    dbc.Button("▼", id={'type': 'deb-reorder-down', 'index': item['id']}, size="sm", color="light", className="border")
+                ], width="auto")
+            ], className="align-items-center")
+        ])
+        items.append(li)
+        
+    return items
+
+
+# 4. GUARDAR CAMBIOS EN DB (Al hacer clic en "Listo")
+@callback(
+    Output("deb-msg", "children", allow_duplicate=True), # Dispara recarga de cards
+    Input("deb-btn-reorder-done", "n_clicks"),
+    State("deb-reorder-temp-store", "data"),
+    prevent_initial_call=True
+)
+def save_reorder_to_db(n_clicks, final_data):
+    if not n_clicks or not final_data: return no_update
+    
+    # Extraer IDs en el nuevo orden
+    ordered_ids = [item['id'] for item in final_data]
+    
+    # Guardar en DB de una sola vez
+    dm.batch_update_account_orders(ordered_ids)
+    
+    return "Orden guardado exitosamente"

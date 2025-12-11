@@ -127,6 +127,13 @@ def generate_header_content(row, calculated_installments_total=None):
     ])
 
 # --- MODALES ---
+cred_reorder_modal = dbc.Modal([
+    dbc.ModalHeader("Organizar Tarjetas"),
+    dbc.ModalBody(dbc.ListGroup(id="cred-reorder-list", flush=True)),
+    dbc.ModalFooter(
+        dbc.Button("Listo", id="cred-btn-reorder-done", color="primary", className="ms-auto")
+    )
+], id="cred-reorder-modal", is_open=False, centered=True, scrollable=True)
 
 # Modal de Reserva
 abono_update_modal = dbc.Modal([
@@ -301,10 +308,11 @@ layout = dbc.Card([
         dcc.Store(id='inst-delete-target-id', data=None),
         dcc.Store(id='inst-update-signal', data=0),
         dcc.Store(id='inst-save-success', data=0),
-
+        dcc.Store(id='cred-reorder-temp-store', data=[]),
         ui_helpers.get_feedback_toast("global-credit-toast"),
         
         # Modales
+        cred_reorder_modal,
         abono_update_modal,
         card_payment_modal,
         confirm_inst_del_modal,
@@ -335,12 +343,17 @@ layout = dbc.Card([
         # BARRA DE HERRAMIENTAS (BUSCADOR + BOTÓN AGREGAR)
         dbc.Row([
             dbc.Col(
-                dbc.Input(id="cred-search-input", placeholder="🔍 Buscar tarjeta por nombre o banco...", type="text"),
-                width=8, lg=9, className="mb-3"
+                dbc.Input(id="cred-search-input", placeholder="🔍 Buscar tarjeta...", type="text"),
+                width=7, lg=8, className="mb-3"
+            ),
+            # 🚨 NUEVO BOTÓN
+            dbc.Col(
+                dbc.Button(html.I(className="bi bi-arrow-down-up"), id="cred-btn-open-reorder", color="secondary", outline=True, className="w-100"),
+                width=2, lg=1, className="mb-3 px-1"
             ),
             dbc.Col(
                 dbc.Button("+ Agregar Tarjeta", id="btn-open-add-card", color="primary", className="w-100 fw-bold"),
-                width=4, lg=3, className="mb-3"
+                width=3, lg=3, className="mb-3"
             ),
         ], className="align-items-center mb-2"),
 
@@ -472,17 +485,14 @@ def cred_load_cards(v_id, url, signal, search_term):
                 dbc.Col(f"${debt:,.2f}", width=7, className="text-end fw-bold text-danger")
             ], className="g-0 small")
 
-        # Botones de Orden
-        up = dbc.Button("◀", id={'type': 'cred-up', 'index': row['id']}, size="sm", color="link", className="p-0 text-decoration-none text-muted me-1")
-        down = dbc.Button("▶", id={'type': 'cred-down', 'index': row['id']}, size="sm", color="link", className="p-0 text-decoration-none text-muted")
-
+        
         # DISEÑO DE LA TARJETA
         card_content = dbc.Card([
             dbc.CardBody([
                 # Cabecera
                 dbc.Row([
                     dbc.Col([html.I(className="bi bi-credit-card-2-front h5 me-2"), html.Span(row['bank_name'], className="small text-muted fw-bold text-uppercase")], className="d-flex align-items-center"),
-                    dbc.Col([up, down], width="auto", className="text-end")
+                   
                 ], className="mb-2 align-items-center"),
                 
                 # Título y Pago
@@ -511,11 +521,6 @@ def cred_load_cards(v_id, url, signal, search_term):
         
     return cards
 
-@callback(Output("inst-update-signal", "data", allow_duplicate=True), Input({'type': 'cred-up', 'index': ALL}, 'n_clicks'), Input({'type': 'cred-down', 'index': ALL}, 'n_clicks'), State("inst-update-signal", "data"), prevent_initial_call=True)
-def cred_reorder(n_up, n_down, sig):
-    if not ctx.triggered or not ctx.triggered[0]['value']: return no_update
-    dm.change_account_order(ctx.triggered_id['index'], 'up' if ctx.triggered_id['type']=='cred-up' else 'down', "Credit")
-    return (sig or 0) + 1
 
 # --- MODAL DETALLE TARJETA ---
 @callback(
@@ -685,3 +690,105 @@ def handle_abono_save(conf, cancel, amt):
     if not amt or float(amt) < 0: return html.Span("Inválido", className="text-danger"), no_update, no_update, no_update
     dm.update_credit_abono_reserve(float(amt))
     return "", f"${float(amt):,.2f}", False, 0
+
+# --- EN pages/accounts_credit.py (AL FINAL) ---
+
+# --- CALLBACKS DE REORDENAMIENTO (LÓGICA EN MEMORIA) ---
+
+# 1. ABRIR MODAL E INICIALIZAR
+@callback(
+    [Output("cred-reorder-modal", "is_open"), 
+     Output("cred-reorder-temp-store", "data")], 
+    [Input("cred-btn-open-reorder", "n_clicks"), 
+     Input("cred-btn-reorder-done", "n_clicks")],
+    State("cred-reorder-modal", "is_open"),
+    prevent_initial_call=True
+)
+def toggle_cred_reorder_modal(n_open, n_done, is_open):
+    trig = ctx.triggered_id
+    
+    if trig == "cred-btn-reorder-done":
+        return False, no_update
+
+    if trig == "cred-btn-open-reorder":
+        df = dm.get_accounts_by_category("Credit")
+        # Guardamos la lista simple
+        data_list = df[['id', 'name', 'bank_name']].to_dict('records')
+        return True, data_list
+
+    return no_update, no_update
+
+
+# 2. MOVER ITEMS (SWAP EN STORE)
+@callback(
+    Output("cred-reorder-temp-store", "data", allow_duplicate=True),
+    [Input({'type': 'cred-reorder-up', 'index': ALL}, 'n_clicks'), 
+     Input({'type': 'cred-reorder-down', 'index': ALL}, 'n_clicks')],
+    State("cred-reorder-temp-store", "data"),
+    prevent_initial_call=True
+)
+def update_cred_temp_order(n_up, n_down, current_data):
+    if not ctx.triggered or not current_data: return no_update
+    
+    trig_dict = ctx.triggered_id
+    clicked_id = trig_dict['index']
+    direction = 'up' if trig_dict['type'] == 'cred-reorder-up' else 'down'
+    
+    idx = next((i for i, item in enumerate(current_data) if item['id'] == clicked_id), -1)
+    if idx == -1: return no_update
+
+    new_data = current_data.copy()
+    
+    if direction == 'up' and idx > 0:
+        new_data[idx], new_data[idx-1] = new_data[idx-1], new_data[idx]
+    elif direction == 'down' and idx < len(new_data) - 1:
+        new_data[idx], new_data[idx+1] = new_data[idx+1], new_data[idx]
+        
+    return new_data
+
+
+# 3. RENDERIZAR LISTA VISUAL
+@callback(
+    Output("cred-reorder-list", "children"),
+    Input("cred-reorder-temp-store", "data")
+)
+def render_cred_reorder_list(data_list):
+    if not data_list: return []
+    
+    items = []
+    for item in data_list:
+        bank_label = item.get('bank_name', '')
+        
+        li = dbc.ListGroupItem([
+            dbc.Row([
+                dbc.Col([
+                    html.Span(item['name'], className="fw-bold d-block"),
+                    html.Small(bank_label, className="text-muted fst-italic")
+                ], width=True),
+                
+                dbc.Col([
+                    dbc.Button("▲", id={'type': 'cred-reorder-up', 'index': item['id']}, size="sm", color="light", className="me-1 border"),
+                    dbc.Button("▼", id={'type': 'cred-reorder-down', 'index': item['id']}, size="sm", color="light", className="border")
+                ], width="auto")
+            ], className="align-items-center")
+        ])
+        items.append(li)
+        
+    return items
+
+
+# 4. GUARDAR CAMBIOS EN DB (Batch Update)
+@callback(
+    Output("inst-update-signal", "data", allow_duplicate=True), # Usamos la señal existente de crédito
+    Input("cred-btn-reorder-done", "n_clicks"),
+    [State("cred-reorder-temp-store", "data"),
+     State("inst-update-signal", "data")],
+    prevent_initial_call=True
+)
+def save_cred_reorder_db(n_clicks, final_data, current_sig):
+    if not n_clicks or not final_data: return no_update
+    
+    ordered_ids = [item['id'] for item in final_data]
+    dm.batch_update_account_orders(ordered_ids)
+    
+    return (current_sig or 0) + 1
