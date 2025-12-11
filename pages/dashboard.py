@@ -291,6 +291,8 @@ def manual_dashboard_refresh(n_clicks, signal):
 # ------------------------------------------------------------------------------
 # 4. CALLBACK DE ELEMENTOS ESTÁTICOS
 # ------------------------------------------------------------------------------
+# --- EN pages/dashboard.py ---
+
 @callback(
     [Output("nw-total", "children"), Output("nw-total", "className"),
      Output("nw-assets-total", "children"), Output("nw-assets-liquid", "children"),
@@ -300,18 +302,22 @@ def manual_dashboard_refresh(n_clicks, signal):
      Output("kpi-month-label-inc", "children"), Output("kpi-month-expense", "children"),
      Output("kpi-month-label-exp", "children"), Output("kpi-savings-rate", "children"),       
      Output("kpi-savings-bar-container", "children"), Output("graph-cashflow", "figure"),
-     # Output("graph-categories", "figure"),  <--- ELIMINADO
      Output("pie-inc-cat", "figure"),
      Output("pie-inc-sub", "figure"), Output("pie-exp-cat", "figure"),
      Output("pie-exp-sub", "figure"), Output("last-updated-dash-label", "children")],
     [Input("url", "pathname"), Input("dashboard-update-signal", "data")] 
 )
 def update_static_dashboard_elements(pathname, update_signal):
-    # Nota: He reducido el número de [no_update] de 22 a 21 porque quitamos una salida
     if pathname != "/": return [no_update] * 21
     
-    df_trans = dm.get_transactions_df()
-    nw_data = dm.get_net_worth_breakdown(force_refresh=False)
+    # 1. OBTENER EL ID DEL USUARIO ACTUAL (CRÍTICO PARA SEGURIDAD)
+    uid = dm.get_uid()
+    if not uid: return [no_update] * 21 
+    
+    # 2. PASAR EL UID A TODAS LAS FUNCIONES (AQUÍ ESTABA EL ERROR)
+    df_trans = dm.get_transactions_df(uid) # <--- AQUÍ
+    nw_data = dm.get_net_worth_breakdown(uid, force_refresh=False) # <--- AQUÍ (Line 315)
+    
     last_ts = dm.get_data_timestamp()
     update_label = f"Precios: {last_ts}"
     
@@ -327,7 +333,9 @@ def update_static_dashboard_elements(pathname, update_signal):
     liab_str = f"${nw_data['liabilities']['total']:,.2f}"
     pay_str = f"${nw_data['liabilities']['payables']:,.2f}"
 
-    stocks = dm.get_stocks_data(force_refresh=False)
+    # 3. PASAR UID TAMBIÉN A STOCKS
+    stocks = dm.get_stocks_data(uid, force_refresh=False) # <--- AQUÍ
+    
     inv_total = nw_data['assets']['investments']
     day_gain_usd = sum((s['market_value'] - (s['market_value'] / (1 + s['day_change_pct']/100))) for s in stocks if s.get('day_change_pct'))
     day_gain_pct = (day_gain_usd / (inv_total - day_gain_usd) * 100) if (inv_total - day_gain_usd) != 0 else 0
@@ -370,7 +378,7 @@ def update_static_dashboard_elements(pathname, update_signal):
         html.Div([html.Small(f"Ahorro Neto: ${savings:,.2f}", className=f"text-{sav_color} fw-bold")], className="d-flex justify-content-between")
     ])
 
-    # --- HELPERS GRÁFICOS CON HOVERLABEL OSCURO ---
+    # --- HELPERS GRÁFICOS ---
     def get_empty_fig(title):
         return go.Figure().update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", title={'text': title, 'x':0.5, 'xanchor':'center'}, xaxis={'visible': False}, yaxis={'visible': False})
 
@@ -398,7 +406,9 @@ def update_static_dashboard_elements(pathname, update_signal):
     fig_exp_cat = make_pie(df_trans, 'Expense', 'category', px.colors.qualitative.Set3, "Sin Gastos")
     fig_exp_sub = make_pie(df_trans, 'Expense', 'subcategory', px.colors.qualitative.Set3, "Sin Subcategorías")
 
-    df_summary = dm.get_monthly_summary()
+    # 4. PASAR UID A MONTHLY SUMMARY
+    df_summary = dm.get_monthly_summary(uid) # <--- AQUÍ
+    
     if df_summary.empty: fig_cash = get_empty_fig("Sin datos")
     else:
         fig_cash = px.bar(df_summary, x="Month", y="amount", color="type", barmode="group", color_discrete_map={"Income": "#00C851", "Expense": "#ff4444"})
@@ -411,13 +421,11 @@ def update_static_dashboard_elements(pathname, update_signal):
             hoverlabel=HOVER_STYLE
         )
 
-    # --- AQUÍ BORRAMOS LA LÓGICA DE DF_CATS y FIG_PIE ---
-
     return (nw_str, nw_class, assets_str, liquid_str, investments_display, recv_str, 
             liab_str, credit_display, pay_str, 
             income_str, label_month, expense_str, label_month, 
             savings_str, savings_bar, 
-            fig_cash, # fig_pie BORRADO AQUÍ TAMBIÉN
+            fig_cash,
             fig_inc_cat, fig_inc_sub, fig_exp_cat, fig_exp_sub,
             update_label)
 # ------------------------------------------------------------------------------

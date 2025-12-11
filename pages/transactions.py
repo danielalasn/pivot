@@ -109,158 +109,87 @@ trans_delete_modal = dbc.Modal([
 ], id="trans-delete-modal", is_open=False, centered=True, size="sm")
 
 # --- LAYOUT PRINCIPAL ---
+# transactions.py
+
+# ... (imports y modales siguen igual) ...
+
 layout = dbc.Container([
-    # STORES
+    # STORES y TOASTS
     dcc.Store(id='trans-viewing-id', data=None), 
     dcc.Store(id='trans-edit-success', data=0),
     dcc.Store(id='global-update-signal', data=0),
     ui_helpers.get_feedback_toast("trans-feedback-toast"),
     
-    # INCLUSIÓN DE MODALES
+    # MODALES
     cat_modal,
     subcat_modal,
     trans_detail_modal,
     trans_delete_modal,
 
-    html.H2("Registro de Transacciones", className="mb-4"),
+    # 1. ENCABEZADO
+    html.Div([
+        html.H2("Registro de Transacciones", className="mb-0 text-primary"),
+    ], className="px-4 pt-4 pb-3"),
 
-    dbc.Row([
-        # --- COLUMNA IZQUIERDA: FORMULARIO COMPACTO ---
-        dbc.Col([
-            dbc.Card([
-                dbc.CardHeader("Nueva Transacción"),
-                
-                # --- CUERPO DEL FORMULARIO ACTUALIZADO ---
-                dbc.CardBody([
-                    
-                    # --- FILA 1: FECHA Y HORA ---
-                    dbc.Row([
-                        dbc.Col([
-                            dbc.Label("Fecha", className="small mb-0"),
-                            dcc.DatePickerSingle(
-                                id='input-date', 
-                                date=date.today(), 
-                                display_format='YYYY-MM-DD', 
-                                className='d-block w-100 small-date-picker'
-                            ),
-                        ], width=6, className="pe-1"),
-                        
-                        dbc.Col([
-                            dbc.Label("Hora", className="small mb-0"),
-                            dbc.Input(
-                                id="input-time", 
-                                type="time", 
-                                value=datetime.now().strftime("%H:%M"), 
-                                size="sm"
-                            ),
-                        ], width=6, className="ps-1"),
-                    ], className="mb-2"), 
-
-                    # --- FILA 2: MONTO Y TIPO ---
-                    dbc.Row([
-                        dbc.Col([
-                            dbc.Label("Tipo", className="small mb-0"),
-                            dcc.Dropdown(
-                                id="input-trans-type", 
-                                options=[
-                                    {"label": "Gasto", "value": "Expense"}, 
-                                    {"label": "Ingreso", "value": "Income"},
-                                    {"label": "Mov. Interno", "value": "Transfer"}
-                                ], 
-                                value="Expense", 
-                                clearable=False,
-                                className="text-dark small-dropdown"
-                            ),
-                        ], width=6),
-                         dbc.Col([
-                            dbc.Label("Monto $", className="small mb-0 fw-bold text-info"),
-                            dbc.Input(id="input-amount", placeholder="0.00", type="number", size="sm"),
-                        ], width=6),
-                        
-                    ], className="mb-2"),
-
-                    # --- FILA 3: CUENTAS (ESTA ES LA QUE FALTABA) ---
-                    dbc.Row([
-                        dbc.Col([
-                            dbc.Label(id="label-account-src", children="Cuenta", className="small mb-0"),
-                            dcc.Dropdown(id="input-account-dd", 
-                                         placeholder="Origen...", 
-                                         className="text-dark small-dropdown", optionHeight=65),
-                        ], width=6),
-                        dbc.Col([
-                            html.Div(id="dest-account-container", children=[
-                                dbc.Label("Hacia (Destino)", className="small mb-0 fw-bold text-primary"),
-                                dcc.Dropdown(id="input-account-dest-dd", placeholder="Destino...", className="text-dark small-dropdown", optionHeight=65),
-                            ], style={"display": "none"})
-                        ], width=6),
-                    ], className="mb-3 g-2"),
-
-                    # --- FILA 4: CATEGORÍAS ---
-                    html.Div(id="category-input-container", children=[
+    # 2. CONTENIDO PRINCIPAL
+    html.Div([
+        dbc.Row([
+            
+            # --- COLUMNA IZQUIERDA: FORMULARIO (ALTURA AUTOMÁTICA) ---
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader("Nueva Transacción"),
+                    dbc.CardBody([
+                        # ... CONTENIDO DEL FORMULARIO (Se mantiene igual) ...
                         dbc.Row([
-                            dbc.Col([
-                                dbc.Label("Categoría", className="small mb-0"),
-                                dbc.Row([
-                                    dbc.Col(
-                                        dcc.Dropdown(id="input-category", placeholder="Ver...", className="text-dark small-dropdown"), 
-                                        width=10
-                                    ),
-                                    dbc.Col(
-                                        dbc.Button("+", id="btn-open-cat-modal", color="primary", outline=True, size="sm", className="w-100"), 
-                                        width=2,
-                                        className="d-grid ps-1"
-                                    )
-                                ], className="g-0 align-items-end")
-                            ], width=6),
-                            
-                            dbc.Col([
-                                dbc.Label("Subcategoría", className="small mb-0"),
-                                dbc.Row([
-                                    dbc.Col(
-                                        dcc.Dropdown(id="input-subcategory", placeholder="Ver...", className="text-dark small-dropdown"), 
-                                        width=10
-                                    ),
-                                    dbc.Col(
-                                        dbc.Button("+", id="btn-open-subcat-modal", color="info", outline=True, size="sm", className="w-100"), 
-                                        width=2,
-                                        className="d-grid ps-1"
-                                    )
-                                ], className="g-0 align-items-end")
-                            ], width=6),
+                            dbc.Col([dbc.Label("Fecha", className="small mb-0"), dcc.DatePickerSingle(id='input-date', date=date.today(), display_format='YYYY-MM-DD', className='d-block w-100 small-date-picker')], width=6, className="pe-1"),
+                            dbc.Col([dbc.Label("Hora", className="small mb-0"), dbc.Input(id="input-time", type="time", value=datetime.now().strftime("%H:%M"), size="sm")], width=6, className="ps-1"),
+                        ], className="mb-2"), 
+
+                        dbc.Row([
+                            dbc.Col([dbc.Label("Tipo", className="small mb-0"), dcc.Dropdown(id="input-trans-type", options=[{"label": "Gasto", "value": "Expense"}, {"label": "Ingreso", "value": "Income"}, {"label": "Mov. Interno", "value": "Transfer"}], value="Expense", clearable=False, className="text-dark small-dropdown")], width=6),
+                            dbc.Col([dbc.Label("Monto $", className="small mb-0 fw-bold text-info"), dbc.Input(id="input-amount", placeholder="0.00", type="number", size="sm")], width=6),
+                        ], className="mb-2"),
+
+                        dbc.Row([
+                            dbc.Col([dbc.Label(id="label-account-src", children="Cuenta", className="small mb-0"), dcc.Dropdown(id="input-account-dd", placeholder="Origen...", className="text-dark small-dropdown", optionHeight=65)], width=6),
+                            dbc.Col([html.Div(id="dest-account-container", children=[dbc.Label("Hacia (Destino)", className="small mb-0 fw-bold text-primary"), dcc.Dropdown(id="input-account-dest-dd", placeholder="Destino...", className="text-dark small-dropdown", optionHeight=65)], style={"display": "none"})], width=6),
                         ], className="mb-3 g-2"),
-                    ]),
 
-                    # --- FILA 5: NOTA ---
-                    dbc.Row([
-                        dbc.Col([
-                            dbc.Label("Nota / Detalle", className="small mb-0"),
-                            dbc.Input(id="input-name", placeholder="Ej. Pago de tarjeta...", type="text", size="sm"),
-                        ], width=12),
-                    ], className="mb-4"),
+                        html.Div(id="category-input-container", children=[
+                            dbc.Row([
+                                dbc.Col([dbc.Label("Categoría", className="small mb-0"), dbc.Row([dbc.Col(dcc.Dropdown(id="input-category", placeholder="Ver...", className="text-dark small-dropdown"), width=10), dbc.Col(dbc.Button("+", id="btn-open-cat-modal", color="primary", outline=True, size="sm", className="w-100"), width=2, className="d-grid ps-1")], className="g-0 align-items-end")], width=6),
+                                dbc.Col([dbc.Label("Subcategoría", className="small mb-0"), dbc.Row([dbc.Col(dcc.Dropdown(id="input-subcategory", placeholder="Ver...", className="text-dark small-dropdown"), width=10), dbc.Col(dbc.Button("+", id="btn-open-subcat-modal", color="info", outline=True, size="sm", className="w-100"), width=2, className="d-grid ps-1")], className="g-0 align-items-end")], width=6),
+                            ], className="mb-3 g-2"),
+                        ]),
 
-                    # --- BOTÓN REGISTRAR ---
-                    dbc.Button("Registrar", id="btn-add-trans", color="success", className="w-100 fw-bold", size="md"),
-                    html.Div(id="msg-add-trans", className="mt-1 text-center small")
-                ])
-            ], className="data-card")
-        ], lg=5, md=12, className="mb-4"),
+                        dbc.Row([dbc.Col([dbc.Label("Nota / Detalle", className="small mb-0"), dbc.Input(id="input-name", placeholder="Ej. Pago de tarjeta...", type="text", size="sm")], width=12)], className="mb-4"),
 
-        # --- COLUMNA DERECHA: TABLA ---
-        dbc.Col([
-            dbc.Card([
-                dbc.CardHeader("Últimos Movimientos"),
-                dbc.CardBody(id="trans-table-container", 
-                            style={"padding": "0", "maxHeight": "50vh", "overflowY": "auto"}) 
-            ],) 
-        ], lg=7, md=12)
-    ])
-], fluid=True, className="page-container")
+                        dbc.Button("Registrar", id="btn-add-trans", color="success", className="w-100 fw-bold", size="md"),
+                        html.Div(id="msg-add-trans", className="mt-1 text-center small")
+                        # ... FIN CONTENIDO FORMULARIO ...
 
+                    ]) # Quitamos clases de scroll aquí porque la tarjeta ya no es fija
+                ], className="data-card shadow-sm") # 🚨 CAMBIO: QUITE 'h-100'. Ahora se ajusta al contenido.
+            
+            # Agregamos estilo inline para que si la pantalla es MUY pequeña, el formulario tenga su propio scroll
+            ], lg=5, md=12, style={"maxHeight": "100%", "overflowY": "auto"}), 
 
-# --- FUNCIONES AUXILIARES GLOBALES ---
-# transactions.py - Sustituye la función generate_table con esta:
+            # --- COLUMNA DERECHA: TABLA (ALTURA COMPLETA) ---
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardBody(id="trans-table-container", 
+                                style={"padding": "0", "height": "100%", "overflowY": "auto"},
+                                className="custom-scrollbar") 
+                ], className="data-card shadow-sm") # 🚨 CAMBIO: MANTUVE 'h-100'. La tabla sí debe llegar al fondo.
+            ], lg=7, md=12, className="h-100") 
 
-# transactions.py
+        ], className="h-100 g-3") 
+
+    ], className="px-4 pb-4 flex-grow-1 overflow-hidden") 
+
+], fluid=True, className="p-0 page-container d-flex flex-column vh-100 overflow-hidden")
+
 
 def generate_table(dataframe):
     if dataframe.empty:

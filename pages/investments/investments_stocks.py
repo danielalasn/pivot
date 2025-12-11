@@ -113,7 +113,8 @@ def save_stock(n_clicks, ticker, shares, price, signal):
     Input("stock-update-signal", "data")
 )
 def render_stock_cards(pathname, signal):
-    stocks = dm.get_stocks_data() 
+    uid = dm.get_uid()
+    stocks = dm.get_stocks_data(uid) 
     
     if not stocks:
         return html.Div("No tienes acciones registradas.", className="text-muted text-center")

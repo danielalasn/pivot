@@ -342,9 +342,12 @@ layout = dbc.Container([
     prevent_initial_call=False
 )
 def fetch_and_cache_assets(pathname, signal):
+    uid = dm.get_uid() # Obtener ID
+    if not uid: return no_update, no_update
+    
     if pathname == "/inversiones":
         # Traemos los datos (Sin forzar refresh aquí, solo lectura de DB)
-        stocks_list = dm.get_stocks_data(force_refresh=False)
+        stocks_list = dm.get_stocks_data(uid, force_refresh=False)
         timestamp = dm.get_data_timestamp()
         label_text = f"Actualizado: {timestamp}"
         return json.dumps(stocks_list), label_text

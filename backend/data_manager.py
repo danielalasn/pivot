@@ -180,7 +180,7 @@ def get_uid():
     """Retorna el ID del usuario actual de manera segura."""
     if current_user and current_user.is_authenticated:
         return current_user.id
-    return 1 # Fallback al Admin (ID 1) si algo falla, para no romper en pruebas
+    return None 
 
 
 # --- LISTAS DE DETECCIÓN MANUAL (Para forzar tipos correctos) ---
@@ -588,7 +588,7 @@ def delete_installment(installment_id):
 # backend/data_manager.py
 
 @cache.memoize(timeout=60)
-def get_dashboard_metrics(selected_month_str=None):
+def get_dashboard_metrics(user_id, selected_month_str=None):
     """
     Calcula Ingresos y Gastos del mes directamente en SQL.
     Mucho más rápido que procesar Pandas.
@@ -787,7 +787,7 @@ def get_net_worth():
 
 # backend/data_manager.py
 @cache.memoize(timeout=120)
-def get_monthly_summary():
+def get_monthly_summary(user_id):
     """Flujo de caja mensual AGRUPADO POR SQL."""
     conn = get_connection()
     uid = get_uid()
@@ -814,7 +814,7 @@ def get_monthly_summary():
         conn.close()
 
 @cache.memoize(timeout=120)
-def get_category_summary():
+def get_category_summary(user_id):
     """Gastos por categoría AGRUPADOS POR SQL."""
     conn = get_connection()
     uid = get_uid()
@@ -1337,14 +1337,14 @@ def clean_ticker_display(raw_ticker):
     return clean
 
 @cache.memoize(timeout=300)
-def get_stocks_data(force_refresh=False):
+def get_stocks_data(user_id, force_refresh=False):
     """
     Obtiene el portafolio del usuario actual combinando:
     1. Datos privados (investments: shares, avg_price) -> Filtrado por user_id
     2. Datos globales (market_cache: price, news) -> Sin filtrar (compartido)
     """
     conn = get_connection()
-    uid = get_uid() # ID del usuario actual
+    uid = user_id # ID del usuario actual
     
     try:
         # 1. Obtener los tickers que posee ESTE usuario
@@ -1543,9 +1543,9 @@ def get_data_timestamp():
         conn.close()
 
 @cache.memoize(timeout=60)
-def get_net_worth_breakdown(force_refresh=False):
+def get_net_worth_breakdown(user_id, force_refresh=False):
     conn = get_connection()
-    uid = get_uid()
+    uid = user_id
     details = {'net_worth': 0.0, 'assets': {'total': 0.0}, 'liabilities': {'total': 0.0}}
     try:
         # Cuentas
@@ -1722,27 +1722,20 @@ def import_historical_data(df):
 
 @cache.memoize(timeout=300)
 def _get_full_networth_history_cached(user_id):
-    """
-    Construye el historial usando la lógica 'Forward Fill':
-    Los huecos sin datos asumen el valor del último día conocido.
-    El valor de HOY siempre se calcula en vivo.
-    """
     conn = get_connection()
     try:
-        # 1. Obtener Histórico CONGELADO de la Base de Datos
-        # Estos son los días que ya guardamos y no deben cambiar
+        # 1. Obtener Histórico CONGELADO...
         df_db = pd.read_sql_query(
             "SELECT date, net_worth FROM historical_net_worth WHERE user_id = ? ORDER BY date ASC", 
             conn, params=(user_id,)
         )
         
-        # Asegurar formato fecha
         if not df_db.empty:
             df_db['date'] = pd.to_datetime(df_db['date']).dt.date
 
         # 2. Calcular el Valor EN VIVO de Hoy
-        # (Para ver cómo se mueven mis acciones ahora mismo)
-        nw_data = get_net_worth_breakdown(force_refresh=False)
+        # --- CORRECCIÓN AQUÍ: Pasar user_id ---
+        nw_data = get_net_worth_breakdown(user_id, force_refresh=False) 
         current_val = nw_data['net_worth']
         today_date = date.today()
 
@@ -1793,19 +1786,17 @@ def _get_full_networth_history_cached(user_id):
 # --- EN backend/data_manager.py ---
 
 def capture_daily_snapshot():
-    """
-    Calcula el Patrimonio Neto ACTUAL y lo guarda/actualiza en la base de datos
-    para la fecha de hoy. Esto 'congela' la historia día a día.
-    """
     conn = get_connection()
     try:
-        # 1. Obtener el valor real de HOY
-        # force_refresh=False para usar precios de acciones cacheados y no hacer lenta la app
-        data = get_net_worth_breakdown(force_refresh=False)
+        # 1. Obtener UID PRIMERO
+        uid = get_uid()
+        if not uid: return # Seguridad
+
+        # 2. Obtener el valor real de HOY (Pasando el UID)
+        data = get_net_worth_breakdown(uid, force_refresh=False) # <--- CORRECCIÓN
         current_nw = data['net_worth']
         
         date_str = date.today().strftime('%Y-%m-%d')
-        uid = get_uid()
         
         cursor = conn.cursor()
         
