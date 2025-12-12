@@ -734,9 +734,9 @@ def add_transaction(date, name, amount, category, trans_type, account_id, subcat
     finally: conn.close()
 
 @cache.memoize(timeout=60)
-def get_transactions_df(start_date=None, end_date=None):
+def get_transactions_df(user_id, start_date=None, end_date=None):
     conn = get_connection()
-    uid = get_uid()
+    uid = user_id
     try:
         # Query base
         sql = """
@@ -835,6 +835,8 @@ def get_monthly_summary(user_id):
     finally:
         conn.close()
 
+
+
 @cache.memoize(timeout=120)
 def get_category_summary(user_id):
     """Gastos por categoría AGRUPADOS POR SQL."""
@@ -860,17 +862,6 @@ def get_category_summary(user_id):
     finally:
         conn.close()
 
-
-def get_category_summary():
-    """Gastos por categoría del usuario (DINÁMICO)."""
-    df = get_transactions_df()
-    if df.empty: return pd.DataFrame()
-    
-    # 🚨 CAMBIO
-    excluded_cats = get_excluded_categories_list()
-    df = df[~df['category'].isin(excluded_cats)]
-    
-    return df[df['type'] == 'Expense'].groupby('category')['amount'].sum().reset_index()
 
 def add_iou(name, amount, iou_type, due_date, person_name=None, description=None):
     conn = get_connection()
@@ -1738,7 +1729,7 @@ def update_user_profile_data(old_password_input, new_name, new_email, new_passwo
         return False, f"Error: {str(e)}"
     finally:
         conn.close()
-        
+
 def import_historical_data(df):
     """Recibe un DataFrame con columnas 'Date' y 'Net_Worth' y lo guarda."""
     conn = get_connection()
@@ -3199,6 +3190,7 @@ def add_fixed_cost(name, amount, frequency, due_day=1, current_allocation=0.0, i
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (uid, name, amount, frequency, current_allocation, due_day, is_percentage, min_amount))
         conn.commit()
+        clear_all_caches()
         return True, "Costo agregado."
     except Exception as e: return False, str(e)
     finally: conn.close()
@@ -3213,6 +3205,7 @@ def update_fixed_cost(fc_id, name, amount, frequency, due_day, current_allocatio
             WHERE id=? AND user_id=?
         """, (name, amount, frequency, due_day, current_allocation, is_percentage, min_amount, fc_id, uid))
         conn.commit()
+        clear_all_caches()
         return True, "Actualizado."
     except Exception as e: return False, str(e)
     finally: conn.close()
@@ -3242,6 +3235,7 @@ def delete_fixed_cost(fc_id):
     try:
         conn.execute("DELETE FROM fixed_costs WHERE id=? AND user_id=?", (fc_id, uid))
         conn.commit()
+        clear_all_caches()
         return True, "Eliminado."
     except Exception as e: return False, str(e)
     finally: conn.close()
@@ -3253,6 +3247,7 @@ def update_fixed_cost_allocation(fc_id, new_allocation):
     try:
         conn.execute("UPDATE fixed_costs SET current_allocation = ? WHERE id = ? AND user_id = ?", (new_allocation, fc_id, uid))
         conn.commit()
+        clear_all_caches()
         return True, "Saldo actualizado."
     except Exception as e: return False, str(e)
     finally: conn.close()
@@ -3353,6 +3348,7 @@ def update_distribution_rule(rule_id, name, alloc_type, value):
             WHERE id=? AND user_id=?
         """, (name, alloc_type, value, rule_id, uid))
         conn.commit()
+        clear_all_caches()
         return True, "Regla actualizada."
     except Exception as e: return False, str(e)
     finally: conn.close()
@@ -3369,6 +3365,7 @@ def add_saving_goal(name, target_amount, current_saved, target_date=None,
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (uid, name, target_amount, current_saved, target_date, mode, fixed_val, pct_val))
         conn.commit()
+        clear_all_caches()
         return True, "Meta creada."
     except Exception as e: return False, str(e)
     finally: conn.close()
@@ -3386,6 +3383,7 @@ def update_saving_goal(goal_id, name, target_amount, current_saved, target_date,
             WHERE id=? AND user_id=?
         """, (name, target_amount, current_saved, target_date, mode, fixed_val, pct_val, goal_id, uid))
         conn.commit()
+        clear_all_caches()
         return True, "Meta actualizada."
     except Exception as e: return False, str(e)
     finally: conn.close()
@@ -3396,6 +3394,7 @@ def delete_saving_goal(goal_id):
     try:
         conn.execute("DELETE FROM savings_goals WHERE id=? AND user_id=?", (goal_id, uid))
         conn.commit()
+        clear_all_caches()  
         return True, "Meta eliminada."
     except Exception as e: return False, str(e)
     finally: conn.close()
@@ -3459,7 +3458,9 @@ def add_distribution_rule(cat_type, name, alloc_type, value, target_acc):
             VALUES (?, ?, ?, ?, ?, ?)
         """, (uid, cat_type, name, alloc_type, value, target_acc))
         conn.commit()
+        clear_all_caches()
         return True, "Regla agregada."
+    
     except Exception as e: return False, str(e)
     finally: conn.close()
 
@@ -3469,6 +3470,7 @@ def delete_distribution_rule(rule_id):
     try:
         conn.execute("DELETE FROM distribution_rules WHERE id=? AND user_id=?", (rule_id, uid))
         conn.commit()
+        clear_all_caches()
         return True, "Eliminado."
     except Exception as e: return False, str(e)
     finally: conn.close()
@@ -3773,6 +3775,7 @@ def add_income_event(name, amount, date_val):
         conn.execute("INSERT INTO income_events (user_id, name, amount, event_date) VALUES (?, ?, ?, ?)", 
                      (uid, name, amount, date_val))
         conn.commit()
+        clear_all_caches()
         return True, "Evento agregado."
     except Exception as e: return False, str(e)
     finally: conn.close()
@@ -3783,6 +3786,7 @@ def delete_income_event(event_id):
     try:
         conn.execute("DELETE FROM income_events WHERE id = ? AND user_id = ?", (event_id, uid))
         conn.commit()
+        clear_all_caches()
         return True, "Eliminado."
     except: return False, "Error"
     finally: conn.close()
@@ -3824,6 +3828,7 @@ def update_income_event(event_id, name, amount, date_val):
             WHERE id = ? AND user_id = ?
         """, (name, amount, date_val, event_id, uid))
         conn.commit()
+        clear_all_caches()
         return True, "Evento actualizado."
     except Exception as e: return False, str(e)
     finally: conn.close()

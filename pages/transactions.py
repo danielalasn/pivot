@@ -1,6 +1,6 @@
 # transactions.py
 import dash
-from dash import dcc, html, callback, Input, Output, State, no_update, ctx 
+from dash import dcc, html, callback, clientside_callback, Input, Output, State, no_update, ctx
 import dash_bootstrap_components as dbc
 from dash import dash_table
 from datetime import date, datetime
@@ -148,11 +148,12 @@ layout = dbc.Container([
                         dbc.Col([
                             dbc.Label("Hora", className="small mb-0"),
                             dbc.Input(
-                                id="input-time", 
-                                type="time", 
-                                value=datetime.now().strftime("%H:%M"), 
-                                size="sm"
-                            ),
+                            id="input-time", 
+                            type="time", 
+                            # value=... (BORRADO, lo llena el JavaScript)
+                            size="sm",
+                            step=60  # <--- AGREGA ESTO. (Fuerza intervalos de 1 min, ocultando segundos)
+                        )
                         ], width=6, className="ps-1"),
                     ], className="mb-2"), 
 
@@ -624,3 +625,20 @@ def handle_save_delete_flow(save_click, delete_click, trans_id, date, name, amou
         else: return no_update, False, no_update, *ui_helpers.mensaje_alerta_exito("danger", msg)
 
     return no_update, no_update, no_update, no_update, no_update, no_update
+
+# --- CALLBACK PARA DETECTAR HORA LOCAL DEL DISPOSITIVO ---
+clientside_callback(
+    """
+    function(pathname) {
+        if (pathname === '/transacciones') {
+            var now = new Date();
+            var hours = String(now.getHours()).padStart(2, '0');
+            var minutes = String(now.getMinutes()).padStart(2, '0');
+            return hours + ':' + minutes;
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("input-time", "value"),
+    Input("url", "pathname")
+)
