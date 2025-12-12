@@ -20,216 +20,202 @@ HOVER_STYLE = dict(
     bordercolor="#444"  # Borde gris
 )
 
-# ------------------------------------------------------------------------------
-# LAYOUT DEL DASHBOARD
-# ------------------------------------------------------------------------------
+
+# --- EN pages/dashboard.py ---
 
 layout = dbc.Container(
     [
-        # Stores para señales y Toast de notificaciones
+        # Stores
         dcc.Store(id='date-range-store', storage_type='local'),
         dcc.Store(id="dashboard-update-signal", data=0), 
         ui_helpers.get_feedback_toast("dashboard-toast"),
 
-        # --- TÍTULO Y REFRESH ---
-       dbc.Row([
-        dbc.Col(
-            html.H2("Resumen Financiero Global", className="mb-0 text-primary"), 
-            width="auto", 
-            className="d-flex align-items-center"
-        ),
-        dbc.Col([
-            dcc.Loading(
-                id="loading-refresh-dash",
-                type="circle",
-                color="#2A9FD6",
-                children=[
-                    html.Div([
-                        dbc.Button(
-                            html.I(className="bi bi-arrow-clockwise"), 
-                            id="btn-refresh-dashboard", 
-                            color="link", 
-                            size="sm", 
-                            className="p-0 ms-2 text-decoration-none text-muted fs-4",
-                            title="Actualizar datos financieros ahora"
-                        ),
-                        html.Small(id="last-updated-dash-label", className="text-muted ms-2 small fst-italic"),
-                        html.Div(id="dummy-dash-spinner-target", style={"display": "none"})
-                    ], className="d-flex align-items-center")
-                ]
-            )
-        ], width="auto", className="d-flex align-items-center ms-auto"),
-    ], className="mb-4 align-items-center"),
-
-        # ---------------------------------------------------------
-        # 1. CARDS DE PATRIMONIO, ACTIVOS Y DEUDAS (Arriba)
-        # ---------------------------------------------------------
+        # 1. ENCABEZADO (Siempre visible)
         dbc.Row([
-            # 1. PATRIMONIO NETO
-             dbc.Col(
-                dbc.Card(
-                    dbc.CardBody([
-                        html.H5("Patrimonio Neto Total", className="card-title text-primary"),
-                        html.H1(id="nw-total", className="card-value display-4 fw-bold"),
-                        html.Small("Activos Reales - Pasivos Totales", className="text-muted")
-                    ]),
-                    className="metric-card h-100 shadow-sm border-primary"
-                ),
-                lg=4, md=12, sm=12, className="mb-4"
-            ),
-            # 2. ACTIVOS
             dbc.Col(
-                dbc.Card(
-                    dbc.CardBody([
-                        html.H5("🟢 Lo que tienes (Activos)", className="card-title text-success"),
-                        html.H3(id="nw-assets-total", className="card-value text-success mb-3"),
-                        dbc.Row([
-                            dbc.Col("Bancos/Efectivo:", className="text-muted"),
-                            dbc.Col(id="nw-assets-liquid", className="text-end fw-bold")
-                        ], className="mb-1"),
-                        html.Div(id="nw-assets-investments-container", className="mb-1"),
-                        dbc.Row([
-                            dbc.Col("Por Cobrar (IOU):", className="text-muted"),
-                            dbc.Col(id="nw-assets-receivable", className="text-end fw-bold")
+                html.H2("Resumen Financiero", className="mb-0 text-primary"), 
+                width="auto", 
+                className="d-flex align-items-center"
+            ),
+            dbc.Col([
+                dcc.Loading(
+                    id="loading-refresh-dash",
+                    type="circle",
+                    color="#2A9FD6",
+                    children=[
+                        html.Div([
+                            dbc.Button(
+                                html.I(className="bi bi-arrow-clockwise"), 
+                                id="btn-refresh-dashboard", 
+                                color="link", 
+                                size="sm", 
+                                className="p-0 ms-2 text-decoration-none text-muted fs-4",
+                                title="Actualizar datos financieros ahora"
+                            ),
+                            html.Small(id="last-updated-dash-label", className="text-muted ms-2 small fst-italic"),
+                            html.Div(id="dummy-dash-spinner-target", style={"display": "none"})
+                        ], className="d-flex align-items-center")
+                    ]
+                )
+            ], width="auto", className="d-flex align-items-center ms-auto"),
+        ], className="mb-4 align-items-center"),
+
+        # 2. SPINNER DE CARGA INICIAL (Visible por defecto)
+        html.Div(id="dashboard-loading-spinner", children=[
+            html.Br(), html.Br(),
+            dbc.Spinner(color="primary", type="grow", size="lg"),
+            html.H5("Consolidando información financiera...", className="mt-3 text-muted fw-light")
+        ], style={"textAlign": "center", "marginTop": "50px", "display": "block"}),
+
+        # 3. CONTENIDO PRINCIPAL (Oculto por defecto con display: none)
+        html.Div(id="dashboard-main-content", style={"display": "none", "animation": "fadein 1s"}, children=[
+            
+            # --- AQUÍ VA TODO EL CONTENIDO QUE YA TENÍAS ---
+            
+            # 1. CARDS DE PATRIMONIO
+            dbc.Row([
+                # PATRIMONIO NETO
+                 dbc.Col(
+                    dbc.Card(
+                        dbc.CardBody([
+                            html.H5("Patrimonio Neto Total", className="card-title text-primary"),
+                            html.H1(id="nw-total", className="card-value display-4 fw-bold"),
+                            html.Small("Activos Reales - Pasivos Totales", className="text-muted")
                         ]),
-                    ]),
-                    className="metric-card h-100 shadow-sm"
+                        className="metric-card h-100 shadow-sm border-primary"
+                    ),
+                    lg=4, md=12, sm=12, className="mb-4"
                 ),
-                lg=4, md=6, sm=12, className="mb-4"
-            ),
-            # 3. PASIVOS
-            dbc.Col(
-                dbc.Card(
-                    dbc.CardBody([
-                        html.H5("🔴 Lo que debes (Pasivos)", className="card-title text-danger"),
-                        html.H3(id="nw-liabilities-total", className="card-value text-danger mb-3"),
-                        html.Div(id="nw-liabilities-credit-container", className="mb-2"),
-                        dbc.Row([
-                            dbc.Col("Por Pagar (IOU):", className="text-muted"),
-                            dbc.Col(id="nw-liabilities-payable", className="text-end fw-bold")
+                # ACTIVOS
+                dbc.Col(
+                    dbc.Card(
+                        dbc.CardBody([
+                            html.H5("🟢 Lo que tienes (Activos)", className="card-title text-success"),
+                            html.H3(id="nw-assets-total", className="card-value text-success mb-3"),
+                            dbc.Row([
+                                dbc.Col("Bancos/Efectivo:", className="text-muted"),
+                                dbc.Col(id="nw-assets-liquid", className="text-end fw-bold")
+                            ], className="mb-1"),
+                            html.Div(id="nw-assets-investments-container", className="mb-1"),
+                            dbc.Row([
+                                dbc.Col("Por Cobrar (IOU):", className="text-muted"),
+                                dbc.Col(id="nw-assets-receivable", className="text-end fw-bold")
+                            ]),
                         ]),
-                    ]),
-                    className="metric-card h-100 shadow-sm"
+                        className="metric-card h-100 shadow-sm"
+                    ),
+                    lg=4, md=6, sm=12, className="mb-4"
                 ),
-                lg=4, md=6, sm=12, className="mb-4"
-            ),
-        ], className="mb-4"),
-
-        # ---------------------------------------------------------
-        # 2. MONITOR DEL MES (Ingresos, Gastos, Ahorro)
-        # ---------------------------------------------------------
-        html.H5("Monitor del Mes Actual", className="text-info mb-3"),
-        dbc.Row([
-            dbc.Col(
-                dbc.Card(dbc.CardBody([
-                        html.H6("Ingresos Reales", className="card-title text-success"),
-                        html.H2(id="kpi-month-income", className="card-value text-success"),
-                        html.Small(id="kpi-month-label-inc", className="text-muted")
-                    ]), className="metric-card h-100 shadow-sm"), lg=4, md=6, sm=12, className="mb-4"
-            ),
-            dbc.Col(
-                dbc.Card(dbc.CardBody([
-                        html.H6("Gastos Reales", className="card-title text-danger"),
-                        html.H2(id="kpi-month-expense", className="card-value text-danger"),
-                        html.Small(id="kpi-month-label-exp", className="text-muted")
-                    ]), className="metric-card h-100 shadow-sm"), lg=4, md=6, sm=12, className="mb-4"
-            ),
-            dbc.Col(
-                dbc.Card(dbc.CardBody([
-                        html.H6("Tasa de Ahorro", className="card-title text-info"),
-                        html.H2(id="kpi-savings-rate", className="card-value text-info"),
-                        html.Div(id="kpi-savings-bar-container", className="mt-2")
-                    ]), className="metric-card h-100 shadow-sm"), lg=4, md=12, sm=12, className="mb-4"
-            ),
-        ]),
-        
-        # ---------------------------------------------------------
-        # 3. HISTÓRICOS (Patrimonio + Flujo de Caja)
-        # ---------------------------------------------------------
-        html.H5("Historicos", className="text-info mb-3"),
-        # A) EVOLUCIÓN PATRIMONIO
-        dbc.Row([
-            dbc.Col(
-                dbc.Card(
-                    dbc.CardBody([
-                        dbc.Row([
-                            dbc.Col(html.H5("Evolución del Patrimonio", className="card-title"), width=12, md=5),
-                            dbc.Col(
-                                html.Div([
-                                    dbc.ButtonGroup([
-                                        dbc.Button("1M", id="btn-1m", n_clicks=0),
-                                        dbc.Button("6M", id="btn-6m", n_clicks=0),
-                                        dbc.Button("1Y", id="btn-1y", n_clicks=0),
-                                        dbc.Button("YTD", id="btn-ytd", n_clicks=0),
-                                        dbc.Button("Todo", id="btn-all", n_clicks=0),
-                                    ], size="sm", className="me-2"),
-                                    dcc.DatePickerRange(
-                                        id='nw-date-picker',
-                                        display_format='DD/MM/YYYY', 
-                                        start_date=None, end_date=date.today(),
-                                        style={'zIndex': 100}
-                                    )
-                                ], className="d-flex justify-content-md-end justify-content-start align-items-center flex-wrap gap-2"), 
-                                width=12, md=7
-                            )
-                        ], className="align-items-center mb-3"),
-                        
-                        dcc.Loading(
-                            type="circle", color="#2A9FD6",
-                            children=dcc.Graph(id="graph-networth-history", config={'displayModeBar': False}, style={'height': '350px'})
-                        )
-                    ]),
-                    className="data-card shadow-sm mb-4"
+                # PASIVOS
+                dbc.Col(
+                    dbc.Card(
+                        dbc.CardBody([
+                            html.H5("🔴 Lo que debes (Pasivos)", className="card-title text-danger"),
+                            html.H3(id="nw-liabilities-total", className="card-value text-danger mb-3"),
+                            html.Div(id="nw-liabilities-credit-container", className="mb-2"),
+                            dbc.Row([
+                                dbc.Col("Por Pagar (IOU):", className="text-muted"),
+                                dbc.Col(id="nw-liabilities-payable", className="text-end fw-bold")
+                            ]),
+                        ]),
+                        className="metric-card h-100 shadow-sm"
+                    ),
+                    lg=4, md=6, sm=12, className="mb-4"
                 ),
-                width=12
-            )
-        ]),
+            ], className="mb-4"),
 
-        # B) FLUJO DE CAJA (Ahora ocupa todo el ancho, sin gastos al lado)
-        dbc.Row([
-            dbc.Col(
-                dbc.Card(dbc.CardBody([
-                        html.H5("Flujo de Caja", className="card-title"),
-                        dcc.Graph(id="graph-cashflow", config={'displayModeBar': False}, style={'height': '350px'})
-                    ]), className="data-card shadow-sm"), lg=12, md=12, sm=12, className="mb-4" # <-- Cambiado lg=8 a lg=12
-            ),
-        ]),
+            # 2. MONITOR DEL MES
+            html.H5("Monitor del Mes Actual", className="text-info mb-3"),
+            dbc.Row([
+                dbc.Col(
+                    dbc.Card(dbc.CardBody([
+                            html.H6("Ingresos Reales", className="card-title text-success"),
+                            html.H2(id="kpi-month-income", className="card-value text-success"),
+                            html.Small(id="kpi-month-label-inc", className="text-muted")
+                        ]), className="metric-card h-100 shadow-sm"), lg=4, md=6, sm=12, className="mb-4"
+                ),
+                dbc.Col(
+                    dbc.Card(dbc.CardBody([
+                            html.H6("Gastos Reales", className="card-title text-danger"),
+                            html.H2(id="kpi-month-expense", className="card-value text-danger"),
+                            html.Small(id="kpi-month-label-exp", className="text-muted")
+                        ]), className="metric-card h-100 shadow-sm"), lg=4, md=6, sm=12, className="mb-4"
+                ),
+                dbc.Col(
+                    dbc.Card(dbc.CardBody([
+                            html.H6("Tasa de Ahorro", className="card-title text-info"),
+                            html.H2(id="kpi-savings-rate", className="card-value text-info"),
+                            html.Div(id="kpi-savings-bar-container", className="mt-2")
+                        ]), className="metric-card h-100 shadow-sm"), lg=4, md=12, sm=12, className="mb-4"
+                ),
+            ]),
+            
+            # 3. HISTÓRICOS
+            dbc.Row([
+                dbc.Col(
+                    dbc.Card(
+                        dbc.CardBody([
+                            dbc.Row([
+                                dbc.Col(html.H5("Evolución Histórica del Patrimonio", className="card-title"), width=12, md=5),
+                                dbc.Col(
+                                    html.Div([
+                                        dbc.ButtonGroup([
+                                            dbc.Button("1M", id="btn-1m", n_clicks=0),
+                                            dbc.Button("6M", id="btn-6m", n_clicks=0),
+                                            dbc.Button("1Y", id="btn-1y", n_clicks=0),
+                                            dbc.Button("YTD", id="btn-ytd", n_clicks=0),
+                                            dbc.Button("Todo", id="btn-all", n_clicks=0),
+                                        ], size="sm", className="me-2"),
+                                        dcc.DatePickerRange(
+                                            id='nw-date-picker',
+                                            display_format='DD/MM/YYYY', 
+                                            start_date=None, end_date=date.today(),
+                                            style={'zIndex': 100}
+                                        )
+                                    ], className="d-flex justify-content-md-end justify-content-start align-items-center flex-wrap gap-2"), 
+                                    width=12, md=7
+                                )
+                            ], className="align-items-center mb-3"),
+                            
+                            dcc.Graph(id="graph-networth-history", config={'displayModeBar': False}, style={'height': '350px'})
+                        ]),
+                        className="data-card shadow-sm mb-4"
+                    ),
+                    width=12
+                )
+            ]),
 
-        # ---------------------------------------------------------
-        # 4. DESGLOSE DETALLADO (TABS)
-        # ---------------------------------------------------------
-        html.H5("Desglose Ingresos y Gastos", className="text-info mb-3 mt-4"),
-        
-        dbc.Card([
-            dbc.CardBody([
-                dbc.Tabs([
-                    dbc.Tab(label="Ingresos", tab_id="tab-inc", children=[
-                        dbc.Row([
-                            dbc.Col([
-                                html.H6("Por Categoría", className="text-center text-success mt-3"),
-                                dcc.Graph(id="pie-inc-cat", config={'displayModeBar': False}, style={'height': '350px'})
-                            ], md=6),
-                            dbc.Col([
-                                html.H6("Por Subcategoría", className="text-center text-success mt-3"),
-                                dcc.Graph(id="pie-inc-sub", config={'displayModeBar': False}, style={'height': '350px'})
-                            ], md=6),
-                        ])
-                    ]),
-                    dbc.Tab(label="Gastos", tab_id="tab-exp", children=[
-                        dbc.Row([
-                            dbc.Col([
-                                html.H6("Por Categoría", className="text-center text-danger mt-3"),
-                                dcc.Graph(id="pie-exp-cat", config={'displayModeBar': False}, style={'height': '350px'})
-                            ], md=6),
-                            dbc.Col([
-                                html.H6("Por Subcategoría", className="text-center text-danger mt-3"),
-                                dcc.Graph(id="pie-exp-sub", config={'displayModeBar': False}, style={'height': '350px'})
-                            ], md=6),
-                        ])
-                    ]),
-                ], active_tab="tab-exp") 
-            ])
-        ], className="data-card shadow-sm mb-5"),
+            dbc.Row([
+                dbc.Col(
+                    dbc.Card(dbc.CardBody([
+                            html.H5("Histórico de Flujo de Caja", className="card-title"),
+                            dcc.Graph(id="graph-cashflow", config={'displayModeBar': False}, style={'height': '350px'})
+                        ]), className="data-card shadow-sm"), lg=12, md=12, sm=12, className="mb-4"
+                ),
+            ]),
+
+            # 4. DESGLOSE DETALLADO
+            html.H5("Desglose Histórico", className="text-info mb-3 mt-4"),
+            dbc.Card([
+                dbc.CardBody([
+                    dbc.Tabs([
+                        dbc.Tab(label="Ingresos", tab_id="tab-inc", children=[
+                            dbc.Row([
+                                dbc.Col([html.H6("Por Categoría", className="text-center text-success mt-3"), dcc.Graph(id="pie-inc-cat", config={'displayModeBar': False}, style={'height': '350px'})], md=6),
+                                dbc.Col([html.H6("Por Subcategoría", className="text-center text-success mt-3"), dcc.Graph(id="pie-inc-sub", config={'displayModeBar': False}, style={'height': '350px'})], md=6),
+                            ])
+                        ]),
+                        dbc.Tab(label="Gastos", tab_id="tab-exp", children=[
+                            dbc.Row([
+                                dbc.Col([html.H6("Por Categoría", className="text-center text-danger mt-3"), dcc.Graph(id="pie-exp-cat", config={'displayModeBar': False}, style={'height': '350px'})], md=6),
+                                dbc.Col([html.H6("Por Subcategoría", className="text-center text-danger mt-3"), dcc.Graph(id="pie-exp-sub", config={'displayModeBar': False}, style={'height': '350px'})], md=6),
+                            ])
+                        ]),
+                    ], active_tab="tab-exp") 
+                ])
+            ], className="data-card shadow-sm mb-5"),
+
+        ]), # Fin de main content
 
     ], fluid=True, className="page-container"
 )
@@ -294,8 +280,14 @@ def manual_dashboard_refresh(n_clicks, signal):
 # ------------------------------------------------------------------------------
 # --- EN pages/dashboard.py ---
 
+# --- EN pages/dashboard.py ---
+
 @callback(
-    [Output("nw-total", "children"), Output("nw-total", "className"),
+    # --- 1. OUTPUTS DE VISIBILIDAD (2) ---
+    [Output("dashboard-loading-spinner", "style"), 
+     Output("dashboard-main-content", "style"),
+     # --- 2. OUTPUTS DE DATOS (21) ---
+     Output("nw-total", "children"), Output("nw-total", "className"),
      Output("nw-assets-total", "children"), Output("nw-assets-liquid", "children"),
      Output("nw-assets-investments-container", "children"), Output("nw-assets-receivable", "children"),
      Output("nw-liabilities-total", "children"), Output("nw-liabilities-credit-container", "children"),
@@ -309,126 +301,146 @@ def manual_dashboard_refresh(n_clicks, signal):
     [Input("url", "pathname"), Input("dashboard-update-signal", "data")] 
 )
 def update_static_dashboard_elements(pathname, update_signal):
-    if pathname != "/": return [no_update] * 21
+    # Si no estamos en home, devolvemos 23 no_updates
+    if pathname != "/": return [no_update] * 23
     
-    # 1. OBTENER EL ID DEL USUARIO ACTUAL (CRÍTICO PARA SEGURIDAD)
     uid = dm.get_uid()
-    if not uid: return [no_update] * 21 
+    if not uid: return [no_update] * 23
     
-    # 2. PASAR EL UID A TODAS LAS FUNCIONES (AQUÍ ESTABA EL ERROR)
-    df_trans = dm.get_transactions_df(uid) # <--- AQUÍ
-    nw_data = dm.get_net_worth_breakdown(uid, force_refresh=False) # <--- AQUÍ (Line 315)
-    
-    last_ts = dm.get_data_timestamp()
-    update_label = f"Precios: {last_ts}"
-    
-    net_worth = nw_data['net_worth']
-    nw_str = f"${net_worth:,.2f}"
-    if net_worth == 0: nw_class = "card-value display-4 fw-bold text-muted"
-    elif net_worth > 0: nw_class = "card-value display-4 fw-bold text-success"
-    else: nw_class = "card-value display-4 fw-bold text-danger"
-
-    assets_str = f"${nw_data['assets']['total']:,.2f}"
-    liquid_str = f"${nw_data['assets']['liquid']:,.2f}"
-    recv_str = f"${nw_data['assets']['receivables']:,.2f}"
-    liab_str = f"${nw_data['liabilities']['total']:,.2f}"
-    pay_str = f"${nw_data['liabilities']['payables']:,.2f}"
-
-    # 3. PASAR UID TAMBIÉN A STOCKS
-    stocks = dm.get_stocks_data(uid, force_refresh=False) # <--- AQUÍ
-    
-    inv_total = nw_data['assets']['investments']
-    day_gain_usd = sum((s['market_value'] - (s['market_value'] / (1 + s['day_change_pct']/100))) for s in stocks if s.get('day_change_pct'))
-    day_gain_pct = (day_gain_usd / (inv_total - day_gain_usd) * 100) if (inv_total - day_gain_usd) != 0 else 0
-    inv_color = "text-success" if day_gain_usd >= 0 else "text-danger"
-    inv_sign = "+" if day_gain_usd >= 0 else ""
-    investments_display = dbc.Row([
-        dbc.Col("Inversiones:", className="text-muted"),
-        dbc.Col([html.Div(f"${inv_total:,.2f}", className="fw-bold text-info"), html.Small(f"{inv_sign}${abs(day_gain_usd):,.2f} ({inv_sign}{day_gain_pct:.2f}%) hoy", className=f"d-block small {inv_color} fw-bold")], className="text-end")
-    ], className="mb-1 align-items-center")
-
-    cred_data = dm.get_credit_summary_data()
-    total_limit = cred_data['total_limit']
-    total_debt = cred_data['total_debt']
-    utilization = (total_debt / total_limit * 100) if total_limit > 0 else 0
-    credit_display = html.Div([
-        dbc.Row([dbc.Col("Límite Total TC:", className="text-muted"), dbc.Col(f"${total_limit:,.2f}", className="text-end fw-bold")], className="mb-1"),
-        dbc.Progress([dbc.Progress(value=utilization, color="danger", bar=True), dbc.Progress(value=100-utilization, color="success" if total_debt > 0 else "secondary", bar=True)], style={"height": "10px", "backgroundColor": "#222"}, className="mb-1"),
-        dbc.Row([dbc.Col(f"Deuda: ${total_debt:,.2f}", className="text-muted small"), dbc.Col(f"Uso: {utilization:.1f}%", className="text-end small fw-bold text-muted")])
-    ])
-
-    EXCLUDED_CATS = dm.get_excluded_categories_list()
-    month_income, month_expense = 0.0, 0.0
-    if not df_trans.empty:
-        df_trans['date_dt'] = pd.to_datetime(df_trans['date'], format='mixed')
-        today_d = date.today()
-        df_curr = df_trans[(df_trans['date_dt'].dt.month == today_d.month) & (df_trans['date_dt'].dt.year == today_d.year)]
-        month_income = df_curr[(df_curr['type'] == 'Income') & (~df_curr['category'].isin(EXCLUDED_CATS))]['amount'].sum()
-        month_expense = df_curr[(df_curr['type'] == 'Expense') & (~df_curr['category'].isin(EXCLUDED_CATS))]['amount'].sum()
-
-    savings = month_income - month_expense
-    savings_rate = (savings / month_income * 100) if month_income > 0 else 0
-    current_month_name = date.today().strftime("%B %Y").capitalize()
-    label_month = f"Total en {current_month_name}"
-    income_str = f"${month_income:,.2f}"
-    expense_str = f"${month_expense:,.2f}"
-    savings_str = f"{savings_rate:.1f}%"
-    sav_color = "success" if savings_rate >= 20 else ("warning" if savings_rate > 0 else "danger")
-    savings_bar = html.Div([
-        dbc.Progress(value=max(0, savings_rate), color=sav_color, striped=True, className="mb-2", style={"height": "15px"}),
-        html.Div([html.Small(f"Ahorro Neto: ${savings:,.2f}", className=f"text-{sav_color} fw-bold")], className="d-flex justify-content-between")
-    ])
-
-    # --- HELPERS GRÁFICOS ---
-    def get_empty_fig(title):
-        return go.Figure().update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", title={'text': title, 'x':0.5, 'xanchor':'center'}, xaxis={'visible': False}, yaxis={'visible': False})
-
-    def make_pie(df_source, type_filter, group_col, color_seq, title_empty):
-        if df_source.empty: return get_empty_fig(title_empty)
-        df_f = df_source[(df_source['type'] == type_filter) & (~df_source['category'].isin(EXCLUDED_CATS)) & (df_source['amount'] > 0)]
-        if df_f.empty: return get_empty_fig(title_empty)
-        df_g = df_f.groupby(group_col)['amount'].sum().reset_index().sort_values(by='amount', ascending=False)
+    # --- BLOQUE SEGURO START ---
+    try:
+        # 1. CÁLCULOS
+        df_trans = dm.get_transactions_df(uid) # Pasar UID corregido
+        nw_data = dm.get_net_worth_breakdown(uid, force_refresh=False)
         
-        fig = px.pie(df_g, names=group_col, values='amount', hole=0.5, color_discrete_sequence=color_seq)
-        fig.update_layout(
-            template="plotly_dark", 
-            plot_bgcolor="rgba(0,0,0,0)", 
-            paper_bgcolor="rgba(0,0,0,0)", 
-            margin=dict(t=20, b=20, l=20, r=20), 
-            legend=dict(orientation="h", y=-0.1, font=dict(color="white")), 
-            font=dict(color="white"),
-            hoverlabel=HOVER_STYLE 
-        )
-        fig.update_traces(textposition='inside', textinfo='percent+label', textfont_size=11)
-        return fig
+        last_ts = dm.get_data_timestamp()
+        update_label = f"Precios: {last_ts}"
+        
+        net_worth = nw_data['net_worth']
+        nw_str = f"${net_worth:,.2f}"
+        if net_worth == 0: nw_class = "card-value display-4 fw-bold text-muted"
+        elif net_worth > 0: nw_class = "card-value display-4 fw-bold text-success"
+        else: nw_class = "card-value display-4 fw-bold text-danger"
 
-    fig_inc_cat = make_pie(df_trans, 'Income', 'category', px.colors.qualitative.Pastel, "Sin Ingresos")
-    fig_inc_sub = make_pie(df_trans, 'Income', 'subcategory', px.colors.qualitative.Pastel, "Sin Subcategorías")
-    fig_exp_cat = make_pie(df_trans, 'Expense', 'category', px.colors.qualitative.Set3, "Sin Gastos")
-    fig_exp_sub = make_pie(df_trans, 'Expense', 'subcategory', px.colors.qualitative.Set3, "Sin Subcategorías")
+        assets_str = f"${nw_data['assets']['total']:,.2f}"
+        liquid_str = f"${nw_data['assets']['liquid']:,.2f}"
+        recv_str = f"${nw_data['assets']['receivables']:,.2f}"
+        liab_str = f"${nw_data['liabilities']['total']:,.2f}"
+        pay_str = f"${nw_data['liabilities']['payables']:,.2f}"
 
-    # 4. PASAR UID A MONTHLY SUMMARY
-    df_summary = dm.get_monthly_summary(uid) # <--- AQUÍ
-    
-    if df_summary.empty: fig_cash = get_empty_fig("Sin datos")
-    else:
-        fig_cash = px.bar(df_summary, x="Month", y="amount", color="type", barmode="group", color_discrete_map={"Income": "#00C851", "Expense": "#ff4444"})
-        fig_cash.update_layout(
-            template="plotly_dark", 
-            plot_bgcolor="rgba(0,0,0,0)", 
-            paper_bgcolor="rgba(0,0,0,0)", 
-            legend_orientation="h", legend_y=1.02, 
-            font=dict(color="white"),
-            hoverlabel=HOVER_STYLE
-        )
+        stocks = dm.get_stocks_data(uid, force_refresh=False)
+        
+        inv_total = nw_data['assets']['investments']
+        day_gain_usd = sum((s['market_value'] - (s['market_value'] / (1 + s['day_change_pct']/100))) for s in stocks if s.get('day_change_pct'))
+        day_gain_pct = (day_gain_usd / (inv_total - day_gain_usd) * 100) if (inv_total - day_gain_usd) != 0 else 0
+        inv_color = "text-success" if day_gain_usd >= 0 else "text-danger"
+        inv_sign = "+" if day_gain_usd >= 0 else ""
+        investments_display = dbc.Row([
+            dbc.Col("Inversiones:", className="text-muted"),
+            dbc.Col([html.Div(f"${inv_total:,.2f}", className="fw-bold text-info"), html.Small(f"{inv_sign}${abs(day_gain_usd):,.2f} ({inv_sign}{day_gain_pct:.2f}%) hoy", className=f"d-block small {inv_color} fw-bold")], className="text-end")
+        ], className="mb-1 align-items-center")
 
-    return (nw_str, nw_class, assets_str, liquid_str, investments_display, recv_str, 
+        cred_data = dm.get_credit_summary_data()
+        total_limit = cred_data['total_limit']
+        total_debt = cred_data['total_debt']
+        utilization = (total_debt / total_limit * 100) if total_limit > 0 else 0
+        credit_display = html.Div([
+            dbc.Row([dbc.Col("Límite Total TC:", className="text-muted"), dbc.Col(f"${total_limit:,.2f}", className="text-end fw-bold")], className="mb-1"),
+            dbc.Progress([dbc.Progress(value=utilization, color="danger", bar=True), dbc.Progress(value=100-utilization, color="success" if total_debt > 0 else "secondary", bar=True)], style={"height": "10px", "backgroundColor": "#222"}, className="mb-1"),
+            dbc.Row([dbc.Col(f"Deuda: ${total_debt:,.2f}", className="text-muted small"), dbc.Col(f"Uso: {utilization:.1f}%", className="text-end small fw-bold text-muted")])
+        ])
+
+        EXCLUDED_CATS = dm.get_excluded_categories_list()
+        month_income, month_expense = 0.0, 0.0
+        if not df_trans.empty:
+            df_trans['date_dt'] = pd.to_datetime(df_trans['date'], format='mixed')
+            today_d = date.today()
+            df_curr = df_trans[(df_trans['date_dt'].dt.month == today_d.month) & (df_trans['date_dt'].dt.year == today_d.year)]
+            month_income = df_curr[(df_curr['type'] == 'Income') & (~df_curr['category'].isin(EXCLUDED_CATS))]['amount'].sum()
+            month_expense = df_curr[(df_curr['type'] == 'Expense') & (~df_curr['category'].isin(EXCLUDED_CATS))]['amount'].sum()
+
+        savings = month_income - month_expense
+        savings_rate = (savings / month_income * 100) if month_income > 0 else 0
+        current_month_name = date.today().strftime("%B %Y").capitalize()
+        label_month = f"Total en {current_month_name}"
+        income_str = f"${month_income:,.2f}"
+        expense_str = f"${month_expense:,.2f}"
+        savings_str = f"{savings_rate:.1f}%"
+        sav_color = "success" if savings_rate >= 20 else ("warning" if savings_rate > 0 else "danger")
+        savings_bar = html.Div([
+            dbc.Progress(value=max(0, savings_rate), color=sav_color, striped=True, className="mb-2", style={"height": "15px"}),
+            html.Div([html.Small(f"Ahorro Neto: ${savings:,.2f}", className=f"text-{sav_color} fw-bold")], className="d-flex justify-content-between")
+        ])
+
+        def get_empty_fig(title):
+            return go.Figure().update_layout(template="plotly_dark", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", title={'text': title, 'x':0.5, 'xanchor':'center'}, xaxis={'visible': False}, yaxis={'visible': False})
+
+        def make_pie(df_source, type_filter, group_col, color_seq, title_empty):
+            if df_source.empty: return get_empty_fig(title_empty)
+            df_f = df_source[(df_source['type'] == type_filter) & (~df_source['category'].isin(EXCLUDED_CATS)) & (df_source['amount'] > 0)]
+            if df_f.empty: return get_empty_fig(title_empty)
+            df_g = df_f.groupby(group_col)['amount'].sum().reset_index().sort_values(by='amount', ascending=False)
+            fig = px.pie(df_g, names=group_col, values='amount', hole=0.5, color_discrete_sequence=color_seq)
+            fig.update_layout(
+                template="plotly_dark", 
+                plot_bgcolor="rgba(0,0,0,0)", 
+                paper_bgcolor="rgba(0,0,0,0)", 
+                margin=dict(t=20, b=20, l=20, r=20), 
+                legend=dict(orientation="h", y=-0.1, font=dict(color="white")), 
+                font=dict(color="white"),
+                hoverlabel=HOVER_STYLE 
+            )
+            fig.update_traces(textposition='inside', textinfo='percent+label', textfont_size=11)
+            return fig
+
+        fig_inc_cat = make_pie(df_trans, 'Income', 'category', px.colors.qualitative.Pastel, "Sin Ingresos")
+        fig_inc_sub = make_pie(df_trans, 'Income', 'subcategory', px.colors.qualitative.Pastel, "Sin Subcategorías")
+        fig_exp_cat = make_pie(df_trans, 'Expense', 'category', px.colors.qualitative.Set3, "Sin Gastos")
+        fig_exp_sub = make_pie(df_trans, 'Expense', 'subcategory', px.colors.qualitative.Set3, "Sin Subcategorías")
+
+        df_summary = dm.get_monthly_summary(uid)
+        if df_summary.empty: fig_cash = get_empty_fig("Sin datos")
+        else:
+            fig_cash = px.bar(df_summary, x="Month", y="amount", color="type", barmode="group", color_discrete_map={"Income": "#00C851", "Expense": "#ff4444"})
+            fig_cash.update_layout(
+                template="plotly_dark", 
+                plot_bgcolor="rgba(0,0,0,0)", 
+                paper_bgcolor="rgba(0,0,0,0)", 
+                legend_orientation="h", legend_y=1.02, 
+                font=dict(color="white"),
+                hoverlabel=HOVER_STYLE
+            )
+
+        # --- RETORNO FINAL EXITOSO (23 ELEMENTOS) ---
+        return (
+            {'display': 'none'},   # 1. Spinner oculto
+            {'display': 'block', 'animation': 'fadein 1s'},  # 2. Contenido visible
+            nw_str, nw_class, assets_str, liquid_str, investments_display, recv_str, 
             liab_str, credit_display, pay_str, 
             income_str, label_month, expense_str, label_month, 
             savings_str, savings_bar, 
             fig_cash,
             fig_inc_cat, fig_inc_sub, fig_exp_cat, fig_exp_sub,
-            update_label)
+            update_label
+        )
+
+    except Exception as e:
+        print(f"🔥 ERROR FATAL EN DASHBOARD: {e}")
+        # --- RETORNO DE EMERGENCIA (23 ELEMENTOS) ---
+        # Si falla, ocultamos el spinner para que no se trabe y mostramos contenido vacío o de error
+        # Devolvemos valores "seguros" para evitar romper el UI
+        empty_fig = go.Figure().update_layout(template="plotly_dark", title="Error de Carga")
+        
+        return (
+            {'display': 'none'}, # 1. Ocultar Spinner
+            {'display': 'block'},# 2. Mostrar Contenido (con errores)
+            "Error", "", "$0.00", "$0.00", "Error", "$0.00", 
+            "$0.00", "Error", "$0.00", 
+            "$0.00", "", "$0.00", "", "0%", "", 
+            empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, 
+            "Error de datos"
+        )
+    # --- FIN BLOQUE SEGURO ---
 # ------------------------------------------------------------------------------
 # 5. CALLBACK DINÁMICO (SOLO PARA GRÁFICO HISTÓRICO)
 # ------------------------------------------------------------------------------

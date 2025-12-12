@@ -1584,7 +1584,7 @@ def get_net_worth_breakdown(user_id, force_refresh=False):
         iou_pay = df_iou[df_iou['type'] == 'Payable']['current_amount'].sum() if not df_iou.empty else 0
         
         # Inversiones
-        stocks = get_stocks_data(force_refresh)
+        stocks = get_stocks_data(uid, force_refresh)
         inv_val = sum(s['market_value'] for s in stocks)
         
         assets = liquid + res + iou_rec + inv_val
@@ -1687,29 +1687,58 @@ def add_custom_category(name):
 
 # --- FUNCIONES DE PERFIL Y SEGURIDAD ---
 
-def update_user_profile_data(new_name, new_password=None):
-    """Actualiza nombre y/o contraseña del usuario actual."""
+# --- EN backend/data_manager.py ---
+
+def update_user_profile_data(old_password_input, new_name, new_email, new_password=None):
+    """
+    Actualiza perfil verificando primero la contraseña antigua.
+    Permite cambiar Nombre, Email y (opcionalmente) Contraseña.
+    """
     conn = get_connection()
     uid = get_uid()
     try:
         cursor = conn.cursor()
         
-        # 1. Actualizar Nombre
-        if new_name:
-            cursor.execute("UPDATE users SET display_name = ? WHERE id = ?", (new_name, uid))
+        # 1. SEGURIDAD: Obtener el hash actual de la base de datos
+        cursor.execute("SELECT password_hash FROM users WHERE id = ?", (uid,))
+        res = cursor.fetchone()
+        
+        if not res:
+            return False, "Usuario no encontrado."
             
-        # 2. Actualizar Password (si se envió)
+        current_db_hash = res[0]
+        
+        # 2. VERIFICAR: La contraseña antigua debe coincidir
+        if not check_password_hash(current_db_hash, old_password_input):
+            return False, "La contraseña actual es incorrecta."
+        
+        # 3. ACTUALIZAR DATOS BÁSICOS (Nombre y Email)
+        # Verificamos si el email cambió para no causar conflicto si ya existe otro igual
+        if new_email:
+            # Opcional: Verificar si el email ya lo usa otro usuario (si tu DB tiene unique constraint)
+            cursor.execute("SELECT id FROM users WHERE email = ? AND id != ?", (new_email, uid))
+            if cursor.fetchone():
+                return False, "Ese correo electrónico ya está en uso."
+        
+        cursor.execute("""
+            UPDATE users 
+            SET display_name = ?, email = ? 
+            WHERE id = ?
+        """, (new_name, new_email, uid))
+            
+        # 4. ACTUALIZAR CONTRASEÑA (Solo si se escribió una nueva)
         if new_password:
-            hashed_pw = generate_password_hash(new_password, method='pbkdf2:sha256')
-            cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hashed_pw, uid))
+            new_hashed_pw = generate_password_hash(new_password, method='pbkdf2:sha256')
+            cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hashed_pw, uid))
             
         conn.commit()
         return True, "Perfil actualizado correctamente."
+        
     except Exception as e:
-        return False, str(e)
+        return False, f"Error: {str(e)}"
     finally:
         conn.close()
-
+        
 def import_historical_data(df):
     """Recibe un DataFrame con columnas 'Date' y 'Net_Worth' y lo guarda."""
     conn = get_connection()
@@ -2891,7 +2920,7 @@ def create_savings_table():
         print(f"Error creando tabla savings_goals: {e}")
     finally:
         conn.close()
-from werkzeug.security import generate_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # EJECUTAR AL IMPORTAR (Justo debajo de check_and_update_users_table)
 

@@ -102,13 +102,21 @@ layout = html.Div([
     dbc.Card([
         dbc.CardBody([
             dbc.Row([
+                # COLUMNA 1: TOTAL (Texto)
+                # xs=12: En celular ocupa todo el ancho (se va arriba)
+                # md="auto": En PC ocupa solo lo necesario
+                # className: Centrado en celular, izquierda en PC, con margen abajo en celular
                 dbc.Col([
                     html.H5("Total a Distribuir:", className="text-muted small mb-0"),
                     html.H3(id="lbl-grand-total", className="mb-0")
-                ], width="auto"),
+                ], xs=12, md="auto", className="text-center text-md-start mb-2 mb-md-0"),
+                
+                # COLUMNA 2: BOTÓN
+                # xs=12: En celular ocupa todo el ancho (se va abajo, botón grande)
+                # md=4: En PC ocupa un tercio o un cuarto
                 dbc.Col([
                     dbc.Button("¡Ejecutar Distribución!", id="btn-execute-dist", color="success", size="lg", className="fw-bold w-100")
-                ], width=3, className="ms-auto")
+                ], xs=12, md=4, className="ms-auto")
             ], className="align-items-center")
         ])
     ], className="sticky-bottom shadow border-top border-success")

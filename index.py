@@ -26,23 +26,28 @@ import utils.ui_helpers as ui_helpers # <--- Importado desde carpeta utils
 
 # --- MODAL 1: MI PERFIL ---
 modal_profile = dbc.Modal([
-    dbc.ModalHeader(dbc.ModalTitle("Mi Perfil")),
+    dbc.ModalHeader(dbc.ModalTitle("Editar Mi Perfil")),
     dbc.ModalBody([
-        # Ya no necesitamos div de alertas aquí, usamos Toasts
         dbc.Label("Nombre de Visualización"),
         dbc.Input(id="input-profile-name", placeholder="Tu nombre", className="mb-3"),
         
-        html.Hr(),
+        dbc.Label("Correo Electrónico"),
+        dbc.Input(id="input-profile-email", type="email", placeholder="correo@ejemplo.com", className="mb-3"),
         
-        dbc.Label("Cambiar Contraseña (Opcional)"),
-        dbc.Input(id="input-profile-pass", type="password", placeholder="Nueva contraseña", className="mb-2"),
-        dbc.Input(id="input-profile-pass-confirm", type="password", placeholder="Confirmar contraseña", className="mb-3"),
+        html.Hr(),
+        html.H6("Seguridad", className="text-muted mb-3"),
+        
+        dbc.Label("Contraseña Actual (Requerida para guardar)", className="fw-bold"),
+        dbc.Input(id="input-profile-old-pass", type="password", placeholder="Ingresa tu contraseña actual", className="mb-3"),
+        
+        dbc.Label("Nueva Contraseña (Opcional - Déjalo vacío si no quieres cambiarla)"),
+        dbc.Input(id="input-profile-new-pass", type="password", placeholder="Nueva contraseña", className="mb-2"),
+        dbc.Input(id="input-profile-new-pass-confirm", type="password", placeholder="Confirmar nueva contraseña", className="mb-3"),
     ]),
     dbc.ModalFooter(
         dbc.Button("Guardar Cambios", id="btn-save-profile", color="primary", n_clicks=0)
     ),
 ], id="modal-profile", is_open=False)
-
 # --- MODAL 2: IMPORTAR HISTORIAL ---
 modal_import = dbc.Modal([
     dbc.ModalHeader(dbc.ModalTitle("Importar Historial Pasado")),
@@ -341,9 +346,13 @@ def toggle_sidebar(n, pathname, is_open):
 # ==============================================================================
 
 # 6. ACTUALIZAR SALUDO
+# --- EN index.py ---
+
+# 6. ACTUALIZAR SALUDO Y PRE-CARGAR DATOS DEL PERFIL
 @app.callback(
     [Output("user-greeting", "children"),
-     Output("input-profile-name", "value")], 
+     Output("input-profile-name", "value"),
+     Output("input-profile-email", "value")], # <--- Nuevo Output
     [Input("url", "pathname"), 
      Input("btn-save-profile", "n_clicks")], 
      prevent_initial_call=False
@@ -351,47 +360,68 @@ def toggle_sidebar(n, pathname, is_open):
 def update_user_greeting(pathname, n_save):
     if current_user.is_authenticated:
         greeting = f"Hola, {current_user.display_name}"
-        return greeting, current_user.display_name
-    return "", ""
-
+        # Asumimos que current_user tiene el campo email. Si usas UserMixin estándar, deberías tenerlo.
+        # Si no carga, asegúrate que tu modelo de Usuario en `models.py` o login manager cargue el email.
+        user_email = getattr(current_user, 'email', '') 
+        return greeting, current_user.display_name, user_email
+    return "", "", ""
 
 # 7. GUARDAR PERFIL (CON TOAST)
+# --- EN index.py ---
+
+# 7. GUARDAR PERFIL (CON VALIDACIÓN DE PASSWORD ACTUAL)
 @app.callback(
     [Output("settings-toast", "is_open"),
      Output("settings-toast", "children"),
      Output("settings-toast", "icon"),
-     Output("modal-profile", "is_open", allow_duplicate=True)], 
+     Output("modal-profile", "is_open", allow_duplicate=True),
+     # Limpiamos los campos de contraseña por seguridad
+     Output("input-profile-old-pass", "value"),
+     Output("input-profile-new-pass", "value"),
+     Output("input-profile-new-pass-confirm", "value")], 
     Input("btn-save-profile", "n_clicks"),
-    [State("input-profile-name", "value"),
-     State("input-profile-pass", "value"),
-     State("input-profile-pass-confirm", "value")],
+    [State("input-profile-old-pass", "value"), # <--- Contraseña Vieja
+     State("input-profile-name", "value"),
+     State("input-profile-email", "value"),   # <--- Nuevo Email
+     State("input-profile-new-pass", "value"),
+     State("input-profile-new-pass-confirm", "value")],
     prevent_initial_call=True
 )
-def save_profile_changes(n, name, password, confirm):
-    if not name:
-        is_open, msg, icon = ui_helpers.mensaje_alerta_exito("danger", "El nombre no puede estar vacío.")
-        return is_open, msg, icon, True # Mantener abierto
+def save_profile_changes(n, old_password, name, email, new_password, confirm):
+    if not n: return dash.no_update
     
-    final_pass = None
-    if password or confirm:
-        if password != confirm:
-            is_open, msg, icon = ui_helpers.mensaje_alerta_exito("danger", "Las contraseñas no coinciden.")
-            return is_open, msg, icon, True
-        if len(password) < 4:
-            is_open, msg, icon = ui_helpers.mensaje_alerta_exito("warning", "La contraseña es muy corta.")
-            return is_open, msg, icon, True
-        final_pass = password
+    # 1. Validaciones básicas
+    if not old_password:
+        is_open, msg, icon = ui_helpers.mensaje_alerta_exito("warning", "Debes ingresar tu contraseña actual para confirmar.")
+        return is_open, msg, icon, True, dash.no_update, dash.no_update, dash.no_update
+
+    if not name or not email:
+        is_open, msg, icon = ui_helpers.mensaje_alerta_exito("danger", "Nombre y Correo son obligatorios.")
+        return is_open, msg, icon, True, old_password, new_password, confirm
     
-    success, text_msg = dm.update_user_profile_data(name, final_pass)
+    final_new_pass = None
+    
+    # 2. Validación de cambio de contraseña
+    if new_password or confirm:
+        if new_password != confirm:
+            is_open, msg, icon = ui_helpers.mensaje_alerta_exito("danger", "Las nuevas contraseñas no coinciden.")
+            return is_open, msg, icon, True, old_password, new_password, confirm
+        if len(new_password) < 4:
+            is_open, msg, icon = ui_helpers.mensaje_alerta_exito("warning", "La nueva contraseña es muy corta.")
+            return is_open, msg, icon, True, old_password, new_password, confirm
+        final_new_pass = new_password
+    
+    # 3. Llamada al Backend
+    success, text_msg = dm.update_user_profile_data(old_password, name, email, final_new_pass)
     
     if success:
         is_open, msg, icon = ui_helpers.mensaje_alerta_exito("success", text_msg)
-        return is_open, msg, icon, False # CERRAR MODAL
+        # Cerramos modal y limpiamos passwords
+        return is_open, msg, icon, False, "", "", "" 
     else:
         is_open, msg, icon = ui_helpers.mensaje_alerta_exito("danger", text_msg)
-        return is_open, msg, icon, True # MANTENER ABIERTO
-
-
+        # Mantenemos modal abierto, pero no borramos lo que escribió para que corrija
+        return is_open, msg, icon, True, old_password, new_password, confirm
 # 8. IMPORTAR HISTORIAL (CON TOAST)
 @app.callback(
     [Output("settings-toast", "is_open", allow_duplicate=True),
