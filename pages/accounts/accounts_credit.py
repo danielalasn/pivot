@@ -161,9 +161,15 @@ card_payment_modal = dbc.Modal([
         html.Div(id="pay-card-feedback", className="mt-2 text-center")
     ]),
     dbc.ModalFooter([
-        dbc.Button("Cancelar", id="btn-pay-card-cancel", outline=True),
-        dbc.Button("Confirmar Pago", id="btn-pay-card-confirm", color="success", className="ms-2"),
-    ])
+    dbc.Button("Cancelar", id="btn-pay-card-cancel", outline=True),
+    dcc.Loading(
+        id="loading-pay-card", type="circle", color="#198754", 
+        children=[
+            html.Div(id="dummy-pay-card", style={"display": "none"}), # DUMMY 1
+            dbc.Button("Confirmar Pago", id="btn-pay-card-confirm", color="success", className="ms-2")
+        ]
+    )
+])
 ], id="card-payment-modal", is_open=False, centered=True, size="md", zIndex=1060)
 
 # Modal Borrar Financiamiento
@@ -171,9 +177,15 @@ confirm_inst_del_modal = dbc.Modal([
     dbc.ModalHeader(dbc.ModalTitle("Borrar Financiamiento")),
     dbc.ModalBody("¿Estás seguro de eliminar este item?"),
     dbc.ModalFooter([
-        dbc.Button("Cancelar", id="btn-inst-del-cancel", className="ms-auto"),
-        dbc.Button("Sí, Borrar", id="btn-inst-del-confirm", color="danger", className="ms-2"),
-    ])
+    dbc.Button("Cancelar", id="btn-inst-del-cancel", className="ms-auto"),
+    dcc.Loading(
+        id="loading-inst-del", type="circle", color="#dc3545", 
+        children=[
+            html.Div(id="dummy-inst-del", style={"display": "none"}), # DUMMY 2
+            dbc.Button("Sí, Borrar", id="btn-inst-del-confirm", color="danger", className="ms-2")
+        ]
+    )
+])
 ], id="delete-inst-confirm-modal", is_open=False, centered=True, zIndex=1080)
 
 # Modal Gestión Financiamiento (Cuotas)
@@ -185,17 +197,23 @@ inst_modal = dbc.Modal([
         dbc.Label("Monto Total"),
         dbc.Input(id="new-inst-amount", type="number", className="mb-2"),
         dbc.Label("Tasa (%)"),
-        dbc.Input(id="new-inst-rate", type="number", value=0, className="mb-2"),
+        dbc.Input(id="new-inst-rate", type="number", placeholder=0, className="mb-2"),
         dbc.Row([
             dbc.Col([dbc.Label("Cuotas Totales"), dbc.Input(id="new-inst-total-q", type="number")], width=4),
-            dbc.Col([dbc.Label("Pagadas"), dbc.Input(id="new-inst-paid-q", type="number", value=0)], width=4),
+            dbc.Col([dbc.Label("Pagadas"), dbc.Input(id="new-inst-paid-q", type="number", placeholder=0)], width=4),
             dbc.Col([dbc.Label("Día Cobro"), dbc.Input(id="new-inst-day", type="number", placeholder="15")], width=4),
         ], className="mb-3"),
     ]),
     dbc.ModalFooter([
-        dbc.Button("Cancelar", id="btn-inst-cancel", color="secondary", outline=True, className="me-auto"),
-        dbc.Button("Guardar", id="btn-inst-save", color="success"),
-    ])
+    dbc.Button("Cancelar", id="btn-inst-cancel", color="secondary", outline=True, className="me-auto"),
+    dcc.Loading(
+        id="loading-inst-save", type="circle", color="#198754", 
+        children=[
+            html.Div(id="dummy-inst-save", style={"display": "none"}), # DUMMY 3
+            dbc.Button("Guardar", id="btn-inst-save", color="success")
+        ]
+    )
+])
 ], id="inst-modal", is_open=False, centered=True, backdrop="static", zIndex=1060)
 
 # Modal Detalle Tarjeta (Padre)
@@ -226,9 +244,15 @@ delete_card_modal = dbc.Modal([
     dbc.ModalHeader("Eliminar Tarjeta"),
     dbc.ModalBody("¿Seguro que deseas eliminar esta tarjeta permanentemente?", id="cred-modal-msg"),
     dbc.ModalFooter([
-        dbc.Button("Cancelar", id="cred-btn-cancel-del", className="ms-auto"),
-        dbc.Button("Sí, Eliminar", id="cred-btn-confirm-del", color="danger", className="ms-2"),
-    ])
+    dbc.Button("Cancelar", id="cred-btn-cancel-del", className="ms-auto"),
+    dcc.Loading(
+        id="loading-card-del", type="circle", color="#dc3545", 
+        children=[
+            html.Div(id="dummy-card-del", style={"display": "none"}), # DUMMY 4
+            dbc.Button("Sí, Eliminar", id="cred-btn-confirm-del", color="danger", className="ms-2")
+        ]
+    )
+])
 ], id="cred-modal-delete", is_open=False, centered=True, zIndex=1070)
 
 # --- NUEVO: MODAL PARA AGREGAR/EDITAR TARJETA (COMPACTO) ---
@@ -291,9 +315,15 @@ add_card_modal = dbc.Modal([
         html.Div(id="cred-form-feedback", className="text-center mt-2 small")
     ]),
     dbc.ModalFooter([
-        dbc.Button("Cancelar", id="cred-btn-cancel", outline=True, size="sm", className="me-auto"),
-        dbc.Button("Guardar Tarjeta", id="cred-btn-save", color="primary", size="sm"),
-    ])
+    dbc.Button("Cancelar", id="cred-btn-cancel", outline=True, size="sm", className="me-auto"),
+    dcc.Loading(
+        id="loading-card-save", type="circle", color="#0d6efd", 
+        children=[
+            html.Div(id="dummy-card-save", style={"display": "none"}), # DUMMY 5
+            dbc.Button("Guardar Tarjeta", id="cred-btn-save", color="primary", size="sm")
+        ]
+    )
+])
 ], id="add-card-modal", is_open=False, centered=True, backdrop="static", size="md")
 
 
@@ -557,9 +587,14 @@ def toggle_card_payment_modal(n_open, n_cancel, card_id):
     trig = ctx.triggered_id
     if trig == "btn-pay-card-cancel": return False, no_update, ""
     if trig == "btn-open-pay-card-modal" and n_open and card_id:
-        options = dm.get_account_options()
+        uid = dm.get_uid()
+        if not uid: return no_update, no_update, no_update
+        
+        options = dm.get_account_options(uid)
         return True, options, ""
     return no_update, no_update, no_update
+
+# --- EN pages/accounts_credit.py ---
 
 @callback(
     [Output("card-payment-modal", "is_open", allow_duplicate=True),
@@ -568,7 +603,8 @@ def toggle_card_payment_modal(n_open, n_cancel, card_id):
      Output("global-credit-toast", "children", allow_duplicate=True),
      Output("global-credit-toast", "icon", allow_duplicate=True),
      Output("pay-card-feedback", "children", allow_duplicate=True),
-     Output("abono-account-balance-display", "children", allow_duplicate=True)], 
+     Output("abono-account-balance-display", "children", allow_duplicate=True),
+     Output("dummy-pay-card", "children")], # <--- NUEVO OUTPUT
     Input("btn-pay-card-confirm", "n_clicks"),
     [State("pay-card-amount", "value"),
      State("pay-card-source", "value"),
@@ -578,14 +614,20 @@ def toggle_card_payment_modal(n_open, n_cancel, card_id):
 )
 def process_card_payment(n_clicks, amount, source, card_id, signal):
     if not n_clicks: return no_update
-    if not amount or float(amount) <= 0: return True, no_update, False, "", "", html.Span("Monto inválido.", className="text-danger"), no_update
+    
+    if not amount or float(amount) <= 0: 
+        # Return con error y dummy vacío
+        return True, no_update, False, "", "", html.Span("Monto inválido.", className="text-danger"), no_update, ""
+        
     success, msg = dm.process_card_payment(card_id, float(amount), source)
+    
     if success:
-        new_reserve_bal = dm.get_credit_abono_reserve()
-        return False, (signal or 0) + 1, *ui_helpers.mensaje_alerta_exito("success", msg), "", f"${new_reserve_bal:,.2f}"
+        new_res = dm.get_credit_abono_reserve()
+        # ÉXITO: dummy vacío al final
+        return False, (signal or 0) + 1, *ui_helpers.mensaje_alerta_exito("success", msg), "", f"${new_res:,.2f}", ""
     else:
-        return True, no_update, False, "", "", html.Span(msg, className="text-danger"), no_update
-
+        # ERROR BACKEND: dummy vacío al final
+        return True, no_update, False, "", "", html.Span(msg, className="text-danger"), no_update, ""
 # --- GESTIÓN FINANCIAMIENTOS ---
 @callback(
     [Output("inst-modal", "is_open"), Output("inst-modal-title", "children"), Output("new-inst-name", "value"), Output("new-inst-amount", "value"), Output("new-inst-rate", "value"), Output("new-inst-total-q", "value"), Output("new-inst-paid-q", "value"), Output("new-inst-day", "value"), Output("inst-editing-id", "data"), Output("delete-inst-confirm-modal", "is_open"), Output("inst-delete-target-id", "data")],
@@ -620,41 +662,69 @@ def toggle_add_card_modal(open_click, cancel_click, is_open):
     return no_update, no_update
 
 # 2. Guardar/Editar/Borrar Tarjeta (MODIFICADO PARA CERRAR MODAL)
+# --- EN pages/accounts_credit.py ---
+
 @callback(
-    [Output("inst-save-success", "data"), Output("inst-update-signal", "data", allow_duplicate=True), Output("global-credit-toast", "is_open", allow_duplicate=True), Output("global-credit-toast", "children", allow_duplicate=True), Output("global-credit-toast", "icon", allow_duplicate=True), Output("add-card-modal", "is_open", allow_duplicate=True)],
-    [Input("btn-inst-save", "n_clicks"), Input("btn-inst-del-confirm", "n_clicks"), Input("cred-btn-save", "n_clicks"), Input("cred-btn-confirm-del", "n_clicks")],
-    [State("cred-viewing-id", "data"), State("inst-editing-id", "data"), State("new-inst-name", "value"), State("new-inst-amount", "value"), State("new-inst-rate", "value"), State("new-inst-total-q", "value"), State("new-inst-paid-q", "value"), State("new-inst-day", "value"), State("inst-update-signal", "data"), State("inst-delete-target-id", "data"), State("cred-name", "value"), State("cred-bank", "value"), State("cred-bank-custom", "value"), State("cred-limit", "value"), State("cred-cut", "value"), State("cred-pay", "value"), State("cred-mode", "value"), State("cred-amount", "value"), State("cred-editing-id", "data"), State("cred-delete-id", "data")],
+    [Output("inst-save-success", "data"), 
+     Output("inst-update-signal", "data", allow_duplicate=True), 
+     Output("global-credit-toast", "is_open", allow_duplicate=True), 
+     Output("global-credit-toast", "children", allow_duplicate=True), 
+     Output("global-credit-toast", "icon", allow_duplicate=True), 
+     Output("add-card-modal", "is_open", allow_duplicate=True),
+     # --- 4 NUEVOS OUTPUTS DUMMY ---
+     Output("dummy-inst-save", "children"),
+     Output("dummy-inst-del", "children"),
+     Output("dummy-card-save", "children"),
+     Output("dummy-card-del", "children")],
+    [Input("btn-inst-save", "n_clicks"), Input("btn-inst-del-confirm", "n_clicks"), 
+     Input("cred-btn-save", "n_clicks"), Input("cred-btn-confirm-del", "n_clicks")],
+    [State("cred-viewing-id", "data"), State("inst-editing-id", "data"), 
+     State("new-inst-name", "value"), State("new-inst-amount", "value"), State("new-inst-rate", "value"), 
+     State("new-inst-total-q", "value"), State("new-inst-paid-q", "value"), State("new-inst-day", "value"), 
+     State("inst-update-signal", "data"), State("inst-delete-target-id", "data"), 
+     State("cred-name", "value"), State("cred-bank", "value"), State("cred-bank-custom", "value"), 
+     State("cred-limit", "value"), State("cred-cut", "value"), State("cred-pay", "value"), 
+     State("cred-mode", "value"), State("cred-amount", "value"), 
+     State("cred-editing-id", "data"), State("cred-delete-id", "data")],
     prevent_initial_call=True
 )
 def global_save_delete_handler(n_save, n_del, n_card_save, n_card_del, acc_id, inst_id, name, amt, rate, tq, pq, pday, sig, del_id, cn, cb, cbc, cl, cc, cp, cm, ca, ce_id, cd_id):
     trig = ctx.triggered_id
     sig = (sig or 0) + 1
     
+    # Tupla de 4 strings vacíos para apagar los 4 spinners a la vez
+    dummies = ("", "", "", "") 
+    
+    # 1. BORRAR FINANCIAMIENTO
     if trig == "btn-inst-del-confirm": 
         dm.delete_installment(del_id)
-        return no_update, sig, *ui_helpers.mensaje_alerta_exito("success", "Eliminado"), no_update
+        return no_update, sig, *ui_helpers.mensaje_alerta_exito("success", "Eliminado"), no_update, *dummies
         
+    # 2. GUARDAR FINANCIAMIENTO
     if trig == "btn-inst-save":
-        if not name or not amt: return no_update, no_update, *ui_helpers.mensaje_alerta_exito("danger", "Faltan datos"), no_update
+        if not name or not amt: 
+            return no_update, no_update, *ui_helpers.mensaje_alerta_exito("danger", "Faltan datos"), no_update, *dummies
         day = int(pday) if pday else 15
         if inst_id: dm.update_installment(inst_id, name, float(amt), float(rate or 0), int(tq), int(pq or 0), day)
         else: dm.add_installment(acc_id, name, float(amt), float(rate or 0), int(tq), int(pq or 0), day)
-        return int(time.time()), sig, *ui_helpers.mensaje_alerta_exito("success", "Guardado"), no_update
+        return int(time.time()), sig, *ui_helpers.mensaje_alerta_exito("success", "Guardado"), no_update, *dummies
         
+    # 3. GUARDAR TARJETA
     if trig == "cred-btn-save":
-        if not cn or not cl: return no_update, no_update, *ui_helpers.mensaje_alerta_exito("danger", "Faltan datos"), True
+        if not cn or not cl: 
+            return no_update, no_update, *ui_helpers.mensaje_alerta_exito("danger", "Faltan datos"), True, *dummies
         bf = cbc if cb == "Otros" else (cb if cb else "-")
         bal = (float(ca) if ca else 0) if cm == "Utilized" else (float(cl) - (float(ca) if ca else 0))
         if ce_id: dm.update_account(ce_id, cn, "Credit", bal, bf, float(cl), cp, cc)
         else: dm.add_account(cn, "Credit", bal, bf, float(cl), cp, cc)
-        return no_update, sig, *ui_helpers.mensaje_alerta_exito("success", "Guardado"), False # Cierra el modal
+        return no_update, sig, *ui_helpers.mensaje_alerta_exito("success", "Guardado"), False, *dummies
         
+    # 4. BORRAR TARJETA
     if trig == "cred-btn-confirm-del":
         dm.delete_account(cd_id)
-        return no_update, sig, *ui_helpers.mensaje_alerta_exito("success", "Eliminada"), False
+        return no_update, sig, *ui_helpers.mensaje_alerta_exito("success", "Eliminada"), False, *dummies
         
-    return no_update, no_update, no_update, no_update, no_update, no_update
-
+    return no_update, no_update, no_update, no_update, no_update, no_update, *dummies
 # Callbacks auxiliares de tarjeta
 @callback([Output("cred-modal-delete", "is_open"), Output("cred-delete-id", "data")], [Input("cred-btn-trigger-delete", "n_clicks"), Input("cred-btn-cancel-del", "n_clicks"), Input("cred-btn-confirm-del", "n_clicks")], [State("cred-viewing-id", "data")], prevent_initial_call=True)
 def cred_del_modal(t, c, conf, vid): return (True, vid) if ctx.triggered_id == "cred-btn-trigger-delete" else (False, no_update)

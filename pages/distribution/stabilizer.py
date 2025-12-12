@@ -110,16 +110,40 @@ layout = html.Div([
 # ==============================================================================
 
 # 1. INIT
+# --- EN pages/distribution/stabilizer.py ---
+
+# 1. INIT (Con Periodicidad Guardada)
 @callback(
     [Output("stab-account-selector", "options"), 
-     Output("stab-account-selector", "value")],
+     Output("stab-account-selector", "value"),
+     Output("stab-frequency", "value")], # <--- NUEVO OUTPUT
     Input("url", "pathname")
 )
 def load_init(path):
-    if not path or "distribucion" not in path: return no_update, no_update
-    opts = dm.get_account_options()
+    if not path or "distribucion" not in path: return no_update, no_update, no_update
+    
+    uid = dm.get_uid()
+    if not uid: return [], None, "monthly"
+    
+    opts = dm.get_account_options(uid)
     sel_acc = dm.get_user_stabilizer_account()
-    return opts, sel_acc
+    
+    # Cargar preferencia guardada (Sincronizado con Revenue)
+    saved_freq = dm.get_user_periodicity()
+    
+    return opts, sel_acc, saved_freq
+
+# --- EN pages/distribution/stabilizer.py ---
+
+# GUARDAR CAMBIO DE VISTA (Sincronizar con Revenue)
+@callback(
+    Output("stab-update-signal", "data", allow_duplicate=True),
+    Input("stab-frequency", "value"),
+    prevent_initial_call=True
+)
+def save_stab_frequency(val):
+    if val: dm.update_user_periodicity(val)
+    return no_update
 
 # 2. GUARDAR CUENTA
 @callback(Output("stab-update-signal", "data", allow_duplicate=True), Input("stab-account-selector", "value"), prevent_initial_call=True)

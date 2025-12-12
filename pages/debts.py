@@ -200,10 +200,25 @@ layout = dbc.Container([
                 dbc.CardHeader("Nuevo Registro"),
                 dbc.CardBody([
                     dbc.RadioItems(id="iou-type", options=[{"label": "Me deben", "value": "Receivable"}, {"label": "Yo debo", "value": "Payable"}], value="Receivable", inline=True, className="mb-2 small"),
-                    dbc.Row([dbc.Col(dbc.Input(id="iou-person-name", placeholder="Persona/Entidad", size="sm"), width=6), dbc.Col(dbc.Input(id="iou-name", placeholder="Concepto", size="sm"), width=6)], className="mb-2 g-2"),
-                    dbc.Row([dbc.Col(dbc.Input(id="iou-amount", placeholder="Monto $", type="number", size="sm"), width=6), dbc.Col(dcc.DatePickerSingle(id='iou-due-date', placeholder='Fecha Límite', display_format='YYYY-MM-DD', className='d-block w-100 small-date-picker'), width=6)], className="mb-3 g-2"),
-                    dbc.Button("Registrar", id="btn-add-iou", color="primary", size="sm", className="w-100"),
-                    html.Div(id="msg-add-iou", className="mt-1 text-center small")
+                    dbc.Row([
+                        dbc.Col(dbc.Input(id="iou-person-name", placeholder="Persona/Entidad", size="sm"), width=6), 
+                        dbc.Col(dbc.Input(id="iou-amount", placeholder="Monto $", type="number", size="sm"), width=6), 
+                    ], className="mb-2 g-2"),
+                    
+                    dbc.Row([
+                        dbc.Input(id="iou-name", placeholder="Concepto", size="sm")
+                        # dbc.Col(dcc.DatePickerSingle(id='iou-due-date', placeholder='Fecha Límite', display_format='YYYY-MM-DD', className='d-block w-100 small-date-picker'), width=6)
+                    ], className="mb-3 g-2"),
+
+                    dcc.Loading(
+                        id="loading-btn-iou",
+                        type="circle",
+                        color="#0d6efd", # Azul primary
+                        children=[
+                            html.Div(id="dummy-iou-submit", style={"display": "none"}), # <--- EL DUMMY
+                            dbc.Button("Registrar", id="btn-add-iou", color="primary", size="sm", className="w-100"),
+                        ]
+                    ),html.Div(id="msg-add-iou", className="mt-1 text-center small")
                 ])
             ], className="data-card mb-3")
         ], lg=4, md=12),
@@ -244,18 +259,43 @@ def load_iou_data_on_start(pathname):
 
 
 # 1. Agregar IOU (Actualiza tabla y resumen)
+# --- EN pages/debts.py (Callback 1) ---
+
+# 1. Agregar IOU (BLINDADO)
 @callback(
-    [Output("msg-add-iou", "children"), Output("iou-table-container", "children", allow_duplicate=True), Output("iou-summary-row", "children", allow_duplicate=True), Output("iou-name", "value"), Output("iou-amount", "value")],
+    [Output("msg-add-iou", "children"), 
+     Output("iou-table-container", "children", allow_duplicate=True), 
+     Output("iou-summary-row", "children", allow_duplicate=True), 
+     Output("iou-name", "value"), 
+     Output("iou-amount", "value"),
+     Output("dummy-iou-submit", "children")], # <--- NUEVO OUTPUT (6to elemento)
     Input("btn-add-iou", "n_clicks"),
-    [State("iou-name", "value"), State("iou-amount", "value"), State("iou-type", "value"), State("iou-due-date", "date"), State("iou-person-name", "value")],
+    [State("iou-name", "value"), 
+     State("iou-amount", "value"), 
+     State("iou-type", "value"), 
+     # State("iou-due-date", "date"), (Recordamos que lo quitaste)
+     State("iou-person-name", "value")],
     prevent_initial_call=True
 )
-def add_iou(n, name, amount, i_type, date, person):
-    if not n: return no_update
-    if not all([name, amount, i_type, person]): return html.Span("Faltan datos", className="text-danger"), no_update, no_update, no_update, no_update
-    dm.add_iou(name, float(amount), i_type, date, person, "")
-    return html.Span("Registrado", className="text-success"), generate_iou_table(dm.get_iou_df()), render_summary_cards(), "", ""
+def add_iou(n, name, amount, i_type, person):
+    # Ajustamos el retorno inicial a 6 valores
+    if not n: return no_update, no_update, no_update, no_update, no_update, no_update
+    
+    if not all([name, amount, i_type, person]): 
+        # Retornamos error y "" al final para detener el spinner
+        return html.Span("Faltan datos", className="text-danger"), no_update, no_update, no_update, no_update, ""
+    
+    try:
+        amt_val = float(amount)
+    except:
+        return html.Span("Monto inválido", className="text-danger"), no_update, no_update, no_update, no_update, ""
 
+    # Guardar en DB
+    dm.add_iou(name, amt_val, i_type, None, person, "")
+    
+    # ÉXITO: Recargamos tabla, tarjetas y limpiamos inputs.
+    # Agregamos "" al final para apagar el spinner.
+    return html.Span("Registrado", className="text-success"), generate_iou_table(dm.get_iou_df()), render_summary_cards(), "", "", ""
 # 2. Capturar Clic en Tabla
 @callback(Output("iou-viewing-id", "data"), [Input("iou-data-table", "active_cell")], [State("iou-data-table", "data")], prevent_initial_call=True)
 def handle_iou_click(active_cell, table_data):
@@ -281,8 +321,13 @@ def open_detail_modal(viewing_id, close_click):
 def toggle_payment_modal(open_n, close_n, iou_id):
     if ctx.triggered_id == "btn-cancel-pay-modal": return False, no_update, "", "", no_update
     if ctx.triggered_id == "btn-open-payment-modal" and iou_id:
+        uid = dm.get_uid()
+        if not uid: return no_update, no_update, "", "", no_update
+
         item = dm.get_iou_by_id(iou_id)
-        if item: return True, f"${item['current_amount']:,.2f}", "", "", dm.get_account_options()
+        if item: 
+            acc_options = dm.get_account_options(uid)
+            return True, f"${item['current_amount']:,.2f}", "", "", acc_options
     return no_update, no_update, no_update, no_update, no_update
 
 # 5. Confirmar Pago Total Modal

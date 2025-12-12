@@ -63,6 +63,9 @@ def clear_all_caches():
         cache.delete_memoized(_get_distribution_rules_cached)
         cache.delete_memoized(_get_income_events_df_cached)
         cache.delete_memoized(_get_full_networth_history_cached)
+        cache.delete_memoized(get_account_options)
+        cache.delete_memoized(get_account_balance_cached)
+        cache.delete_memoized(get_user_distribution_accounts)
         capture_daily_snapshot()
         print("🧹 Caché limpiado: Datos frescos listos.")
     except Exception as e:
@@ -329,9 +332,11 @@ def change_account_order(account_id, direction, category_group):
         conn.commit()
         conn.close()
 
-def get_account_options():
+@cache.memoize(timeout=60)
+def get_account_options(user_id): # <--- AHORA PIDE USER_ID
     conn = get_connection()
-    uid = get_uid()
+    # uid = get_uid() (BORRAR ESTO)
+    uid = user_id     # (USAR ESTO)
     options = []
     try:
         cursor = conn.cursor()
@@ -354,6 +359,24 @@ def get_account_options():
     conn.close()
     return options
 
+# --- EN backend/data_manager.py (NUEVA FUNCIÓN) ---
+
+@cache.memoize(timeout=60)
+def get_account_balance_cached(account_id, user_id):
+    """Obtiene el saldo de una cuenta rápidamente con caché."""
+    if not account_id: return 0.0
+    
+    # Caso especial Reserva
+    if account_id == 'RESERVE':
+        return get_credit_abono_reserve() # Esta ya debería estar optimizada o ser rápida
+        
+    conn = get_connection()
+    try:
+        # Consulta ultra rápida
+        res = conn.execute("SELECT current_balance FROM accounts WHERE id=? AND user_id=?", (account_id, user_id)).fetchone()
+        return res[0] if res else 0.0
+    finally:
+        conn.close()
 
 def get_account_type_summary():
     """Resumen de Activos vs Pasivos para el Mini-Dashboard de Cuentas."""
@@ -2729,44 +2752,45 @@ def make_iou_payment(iou_id, payment_amount, account_id=None):
 
 # backend/data_manager.py
 
+# --- EN backend/data_manager.py ---
+
 def process_card_payment(card_id, amount, source_id=None):
     """
     Procesa el pago de una tarjeta de crédito.
-    - card_id: ID de la tarjeta a pagar.
-    - amount: Monto a pagar.
-    - source_id: (Opcional) ID de la cuenta origen o "RESERVE". Si es None, es pago externo.
+    CORREGIDO: Ahora pasa user_id a _adjust_account_balance para que el saldo cambie.
     """
     conn = get_connection()
     cursor = conn.cursor()
+    uid = get_uid() # Obtenemos el ID
     date_today = date.today().strftime('%Y-%m-%d')
     
     try:
         # 1. Validar Tarjeta
-        cursor.execute("SELECT name, current_balance FROM accounts WHERE id = ?", (card_id,))
+        cursor.execute("SELECT name, current_balance FROM accounts WHERE id = ? AND user_id = ?", (card_id, uid))
         res = cursor.fetchone()
         if not res: return False, "Tarjeta no encontrada."
         card_name, current_debt = res
         
-        source_name = "Origen Externo" # Valor por defecto si no se selecciona cuenta
+        source_name = "Origen Externo"
         
-        # 2. Manejo del Origen de Fondos (SOLO SI SE SELECCIONÓ UNO)
+        # 2. Manejo del Origen de Fondos
         if source_id:
             if source_id == "RESERVE":
                 # A. PAGO DESDE RESERVA
-                cursor.execute("SELECT balance FROM abono_reserve WHERE id = 1")
+                # Usamos user_id para buscar la reserva correcta
+                cursor.execute("SELECT balance FROM abono_reserve WHERE user_id = ?", (uid,))
                 res_res = cursor.fetchone()
                 reserve_bal = res_res[0] if res_res else 0.0
                 
                 if amount > reserve_bal + 0.01:
                     return False, f"Saldo insuficiente en Reserva (${reserve_bal:,.2f})."
                 
-                new_reserve = reserve_bal - amount
-                cursor.execute("UPDATE abono_reserve SET balance = ? WHERE id = 1", (new_reserve,))
+                cursor.execute("UPDATE abono_reserve SET balance = balance - ? WHERE user_id = ?", (amount, uid))
                 source_name = "Reserva de Abono"
                 
             else:
                 # B. PAGO DESDE CUENTA BANCARIA
-                cursor.execute("SELECT name, current_balance, type FROM accounts WHERE id = ?", (source_id,))
+                cursor.execute("SELECT name, current_balance, type FROM accounts WHERE id = ? AND user_id = ?", (source_id, uid))
                 res_acc = cursor.fetchone()
                 if not res_acc: return False, "Cuenta de origen no encontrada."
                 acc_name, acc_bal, acc_type = res_acc
@@ -2775,26 +2799,29 @@ def process_card_payment(card_id, amount, source_id=None):
                     return False, f"Saldo insuficiente en {acc_name} (${acc_bal:,.2f})."
                 
                 # Registrar GASTO en la cuenta de origen
-                _adjust_account_balance(cursor, source_id, amount, 'Expense', is_reversal=False)
+                # 🚨 CORRECCIÓN: PASAMOS user_id=uid
+                _adjust_account_balance(cursor, source_id, amount, 'Expense', is_reversal=False, user_id=uid)
                 
                 # Registrar transacción de salida
                 cursor.execute("""
-                    INSERT INTO transactions (date, name, amount, category, type, account_id) 
-                    VALUES (?, ?, ?, ?, 'Expense', ?)
-                """, (date_today, f"Pago a {card_name}", amount, "Transferencia/Pago", source_id))
+                    INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory) 
+                    VALUES (?, ?, ?, ?, 'Transferencia/Pago', 'Expense', ?, 'Pago Tarjeta')
+                """, (uid, date_today, f"Pago a {card_name}", amount, source_id))
                 
                 source_name = acc_name
 
-        # 3. APLICAR PAGO A LA TARJETA (Siempre ocurre)
-        _adjust_account_balance(cursor, card_id, amount, 'Income', is_reversal=False)
+        # 3. APLICAR PAGO A LA TARJETA (Disminuir deuda)
+        # 🚨 CORRECCIÓN: PASAMOS user_id=uid
+        _adjust_account_balance(cursor, card_id, amount, 'Income', is_reversal=False, user_id=uid)
         
         # Registrar transacción de entrada en la tarjeta
         cursor.execute("""
-            INSERT INTO transactions (date, name, amount, category, type, account_id) 
-            VALUES (?, ?, ?, ?, 'Income', ?)
-        """, (date_today, f"Pago desde {source_name}", amount, "Transferencia/Pago", card_id))
+            INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory) 
+            VALUES (?, ?, ?, ?, 'Transferencia/Pago', 'Income', ?, 'Abono/Pago')
+        """, (uid, date_today, f"Pago desde {source_name}", amount, card_id))
         
         conn.commit()
+        clear_all_caches() # Limpiamos caché para que se vea reflejado al instante
         return True, f"Pago de ${amount:,.2f} aplicado ({source_name})."
         
     except Exception as e:
@@ -2802,8 +2829,9 @@ def process_card_payment(card_id, amount, source_id=None):
         return False, f"Error al procesar pago: {str(e)}"
     finally:
         conn.close()
-
 # backend/data_manager.py
+
+# --- EN backend/data_manager.py ---
 
 def add_transfer(date_val, name, amount, source_acc_id, dest_acc_id):
     conn = get_connection()
@@ -2811,13 +2839,12 @@ def add_transfer(date_val, name, amount, source_acc_id, dest_acc_id):
     uid = get_uid()
 
     try:
-        # --- VALIDACIÓN DE FONDOS EN ORIGEN (NUEVO) ---
+        # 1. Validar fondos en origen
         has_funds, error_msg = _check_sufficient_funds(cursor, source_acc_id, amount, uid)
         if not has_funds:
             return False, error_msg
-        # ----------------------------------------------
 
-        # Obtener nombres (solo para el texto del registro)
+        # 2. Obtener NOMBRES de las cuentas (Para la subcategoría)
         cursor.execute("SELECT name FROM accounts WHERE id = ? AND user_id = ?", (source_acc_id, uid))
         res_src = cursor.fetchone()
         src_name = res_src[0] if res_src else "Cuenta Origen"
@@ -2826,24 +2853,31 @@ def add_transfer(date_val, name, amount, source_acc_id, dest_acc_id):
         res_dest = cursor.fetchone()
         dest_name = res_dest[0] if res_dest else "Cuenta Destino"
 
+        # Detalle adicional si el usuario escribió algo
         user_detail = f": {name}" if name and name != "-" else ""
 
-        # 1. RETIRO (Expense)
+        # ---------------------------------------------------------
+        # MOVIMIENTO 1: SALIDA (De la cuenta Origen)
+        # ---------------------------------------------------------
         trans_name_out = f"Transferencia a {dest_name}{user_detail}"
         cursor.execute("""
             INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (uid, date_val, trans_name_out, amount, "Transferencia", "Expense", source_acc_id, "Movimiento Interno"))
+            VALUES (?, ?, ?, ?, 'Transferencia', 'Transfer', ?, ?)
+        """, (uid, date_val, trans_name_out, amount, source_acc_id, f"Salida: {dest_name}"))
 
+        # Matemáticamente restamos ('Expense')
         _adjust_account_balance(cursor, source_acc_id, amount, "Expense", is_reversal=False, user_id=uid)
 
-        # 2. DEPÓSITO (Income)
+        # ---------------------------------------------------------
+        # MOVIMIENTO 2: ENTRADA (A la cuenta Destino)
+        # ---------------------------------------------------------
         trans_name_in = f"Transferencia desde {src_name}{user_detail}"
         cursor.execute("""
             INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (uid, date_val, trans_name_in, amount, "Transferencia", "Income", dest_acc_id, "Movimiento Interno"))
+            VALUES (?, ?, ?, ?, 'Transferencia', 'Transfer', ?, ?)
+        """, (uid, date_val, trans_name_in, amount, dest_acc_id, f"Entrada: {src_name}"))
 
+        # Matemáticamente sumamos ('Income')
         _adjust_account_balance(cursor, dest_acc_id, amount, "Income", is_reversal=False, user_id=uid)
 
         conn.commit()
@@ -2855,7 +2889,6 @@ def add_transfer(date_val, name, amount, source_acc_id, dest_acc_id):
         return False, f"Error en transferencia: {e}"
     finally:
         conn.close()
-
 
 def create_fixed_costs_table():
     conn = get_connection()
@@ -3026,17 +3059,32 @@ def admin_reset_password(user_id, new_password):
     finally:
         conn.close()
 
+# --- EN backend/data_manager.py ---
+
+def get_user_income_account():
+    """Recupera la cuenta de origen de ingresos por defecto."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT income_account_id FROM users WHERE id = ?", (uid,))
+        res = cur.fetchone()
+        return res[0] if res else None
+    finally: conn.close()
+
 def update_last_login(user_id):
-    """Actualiza la fecha de último login (Llamar desde login.py)."""
+    """Actualiza la fecha de último login (Compatible PG/SQLite)."""
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET last_login = datetime('now', 'localtime') WHERE id = ?", (user_id,))
+        # Generamos la fecha en Python para evitar problemas de sintaxis SQL
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        cursor.execute("UPDATE users SET last_login = ? WHERE id = ?", (now_str, user_id))
         conn.commit()
-    except: pass
+    except Exception as e: 
+        print(f"Error updating last login: {e}")
     finally: conn.close()
-
-
 
 # backend/data_manager.py
 
@@ -3507,75 +3555,79 @@ def update_item_target_account(table_name, item_id, account_id):
 
 # --- LA FUNCIÓN MAESTRA: DISTRIBUIR ---
 
+# --- EN backend/data_manager.py ---
+
 def execute_distribution_process(income_total, source_account_id, distribution_data):
     """
-    Ejecuta el reparto masivo.
-    distribution_data: Lista de dicts { 'type': 'FC'/'SV'/'INV'/'GF', 'id': db_id, 'amount': $$, 'target_acc': acc_id, 'name': str }
+    Ejecuta el reparto masivo CONSOLIDANDO las transacciones.
     """
     conn = get_connection()
     cursor = conn.cursor()
     uid = get_uid()
-    date_val = date.today().strftime('%Y-%m-%d')
+    timestamp_val = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    group_names = {
+        'FC': 'Costos Fijos', 'SV': 'Ahorro', 'INV': 'Inversión', 'GF': 'Guilt Free'
+    }
     
     try:
-        # 1. Validar Fondos en Origen
-        total_needed = sum(d['amount'] for d in distribution_data)
+        # 🚨 CORRECCIÓN: Convertir a float nativo
+        total_needed = float(sum(d['amount'] for d in distribution_data))
+        
         has_funds, msg = _check_sufficient_funds(cursor, source_account_id, total_needed, uid)
         if not has_funds: return False, msg
 
-        logs = []
+        consolidated_moves = {}
 
         for item in distribution_data:
-            amount = item['amount']
+            # 🚨 CORRECCIÓN: Asegurar que cada item sea float
+            amount = float(item['amount'])
+            
             if amount <= 0: continue
             
-            target_acc = item.get('target_acc')
-            name = item['name']
-            itype = item['type']
             iid = item['id']
+            itype = item['type']
+            target_acc = item.get('target_acc')
 
-            # A. TRANSFERENCIA DE DINERO (Si hay cuenta destino y es diferente a origen)
+            # A. Actualizar Tablas Internas
+            if itype == 'FC':
+                cursor.execute("UPDATE fixed_costs SET current_allocation = COALESCE(current_allocation, 0) + ? WHERE id=? AND user_id=?", (amount, iid, uid))
+            elif itype == 'SV':
+                cursor.execute("UPDATE savings_goals SET current_saved = COALESCE(current_saved, 0) + ? WHERE id=? AND user_id=?", (amount, iid, uid))
+            
+            # B. Agrupar
             if target_acc and str(target_acc) != str(source_account_id):
-                # Usamos la lógica de transferencia manual pero paso a paso para que sea atómico
-                # Retiro Origen
-                cursor.execute("""
-                    INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
-                    VALUES (?, ?, ?, ?, 'Transferencia', 'Expense', ?, 'Reparto Ingresos')
-                """, (uid, date_val, f"Reparto: {name}", amount, source_account_id))
-                _adjust_account_balance(cursor, source_account_id, amount, 'Expense', False, uid)
-                
-                # Ingreso Destino
-                cursor.execute("""
-                    INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
-                    VALUES (?, ?, ?, ?, 'Transferencia', 'Income', ?, 'Reparto Ingresos')
-                """, (uid, date_val, f"Recibido: {name}", amount, target_acc))
-                _adjust_account_balance(cursor, target_acc, amount, 'Income', False, uid)
-            
-            elif not target_acc:
-                # Si no hay cuenta destino, solo se descuenta del origen como Gasto (Ya se pagó o salió)
-                # Opcional: Depende de como quiera el usuario. Asumiremos que si no hay destino, se queda en la cuenta origen
-                # pero se marca "lógicamente". 
-                pass 
+                key = (target_acc, itype)
+                if key not in consolidated_moves:
+                    consolidated_moves[key] = 0.0
+                consolidated_moves[key] += amount
 
-            # B. ACTUALIZACIÓN LÓGICA (Apartados)
-            if itype == 'FC': # Fixed Costs
-                # Usamos COALESCE(current_allocation, 0) para evitar errores si el campo es NULL
-                cursor.execute("""
-                    UPDATE fixed_costs 
-                    SET current_allocation = COALESCE(current_allocation, 0) + ? 
-                    WHERE id=? AND user_id=?
-                """, (amount, iid, uid))
-                
-            elif itype == 'SV': # Savings
-                cursor.execute("""
-                    UPDATE savings_goals 
-                    SET current_saved = COALESCE(current_saved, 0) + ? 
-                    WHERE id=? AND user_id=?
-                """, (amount, iid, uid))
+        # 3. EJECUTAR TRANSFERENCIAS REALES
+        for (target_acc, itype), total_amt in consolidated_moves.items():
             
-            logs.append(f"{name}: ${amount:,.2f}")
+            # 🚨 CORRECCIÓN FINAL: Asegurar float también aquí
+            total_amt = float(total_amt)
+            
+            group_label = group_names.get(itype, itype)
+            
+            # A. SALIDA
+            cursor.execute("""
+                INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
+                VALUES (?, ?, ?, ?, 'Distribución', 'Transfer', ?, ?)
+            """, (uid, timestamp_val, f"Distr: {group_label}", total_amt, source_account_id, f"Salida: {group_label}"))
+            
+            _adjust_account_balance(cursor, source_account_id, total_amt, 'Expense', False, uid)
+            
+            # B. ENTRADA
+            cursor.execute("""
+                INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
+                VALUES (?, ?, ?, ?, 'Distribución', 'Transfer', ?, ?)
+            """, (uid, timestamp_val, f"Recibido: {group_label}", total_amt, target_acc, f"Entrada: {group_label}"))
+            
+            _adjust_account_balance(cursor, target_acc, total_amt, 'Income', False, uid)
 
         conn.commit()
+        clear_all_caches()
         return True, f"Reparto exitoso de ${total_needed:,.2f}"
         
     except Exception as e:
@@ -3583,9 +3635,6 @@ def execute_distribution_process(income_total, source_account_id, distribution_d
         return False, f"Error en distribución: {e}"
     finally:
         conn.close()
-
-# --- EN backend/data_manager.py ---
-
 # 1. Función auxiliar para verificar/crear la subcategoría
 def _ensure_subcategory_exists(category_name, subcategory_name, user_id):
     conn = get_connection()
@@ -3843,7 +3892,7 @@ from dateutil.relativedelta import relativedelta # Asegúrate de tener dateutil 
 # En backend/data_manager.py
 
 # En backend/data_manager.py
-
+@cache.memoize(timeout=300)
 def calculate_stabilizer_projection(base_salary_monthly, current_stabilizer_balance, frequency='monthly'):
     """
     Proyecta usando la lógica de "Mínimo Sostenible" (Cuello de botella).
@@ -3979,38 +4028,50 @@ def calculate_stabilizer_projection(base_salary_monthly, current_stabilizer_bala
         'bottleneck_period': bottleneck_period # Para decir "hasta Marzo"
     }
 # 5. Ejecutar el Retiro (Mover dinero de Caja Chica -> Cuenta Principal)
+# --- EN backend/data_manager.py ---
+
 def execute_stabilizer_withdrawal(amount, source_acc_id, dest_acc_id):
+    """
+    Mueve dinero de la Caja Chica a la cuenta principal.
+    Usa TIMESTAMP exacto y tipo TRANSFERENCIA.
+    """
     conn = get_connection()
     cursor = conn.cursor()
     uid = get_uid()
-    date_val = date.today().strftime('%Y-%m-%d')
+    
+    # Timestamp exacto
+    timestamp_val = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    amount = float(amount)
+    
     try:
-        # Validación
         has_funds, msg = _check_sufficient_funds(cursor, source_acc_id, amount, uid)
         if not has_funds: return False, msg
         
-        # Transacción de Salida (Caja Chica)
+        # 1. SALIDA (Caja Chica) -> Type: Transfer
         cursor.execute("""
             INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
-            VALUES (?, ?, 'Retiro Estabilizador', ?, 'Transferencia', 'Expense', ?, 'Sueldo Saludable')
-        """, (uid, date_val, amount, source_acc_id))
+            VALUES (?, ?, 'Retiro Estabilizador', ?, 'Distribución', 'Transfer', ?, 'Salida: Caja Chica')
+        """, (uid, timestamp_val, amount, source_acc_id))
+        
         _adjust_account_balance(cursor, source_acc_id, amount, 'Expense', False, uid)
         
-        # Transacción de Entrada (Cuenta Principal / Gasto Corriente)
+        # 2. ENTRADA (Cuenta Principal) -> Type: Transfer
         if dest_acc_id:
              cursor.execute("""
                 INSERT INTO transactions (user_id, date, name, amount, category, type, account_id, subcategory)
-                VALUES (?, ?, 'Ingreso Estabilizador', ?, 'Transferencia', 'Income', ?, 'Sueldo Saludable')
-            """, (uid, date_val, amount, dest_acc_id))
+                VALUES (?, ?, 'Ingreso Estabilizador', ?, 'Distribución', 'Transfer', ?, 'Entrada: Salario Base')
+            """, (uid, timestamp_val, amount, dest_acc_id))
+             
              _adjust_account_balance(cursor, dest_acc_id, amount, 'Income', False, uid)
              
         conn.commit()
+        clear_all_caches()
         return True, "Suplemento transferido con éxito."
     except Exception as e:
         conn.rollback()
         return False, str(e)
     finally: conn.close()
-
 # --- AGREGAR AL FINAL DE backend/data_manager.py ---
 
 def manual_price_refresh():
@@ -4085,3 +4146,48 @@ def manual_price_refresh():
         return False, f"Error interno: {str(e)}"
     finally:
         conn.close()
+
+# --- EN backend/data_manager.py ---
+
+def check_users_periodicity_column():
+    """Asegura que la columna periodicity_preference exista en la tabla users."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        if not check_column_exists(cursor, 'users', 'periodicity_preference'):
+            print("⚠️ Migrando tabla users: Agregando periodicity_preference...")
+            cursor.execute("ALTER TABLE users ADD COLUMN periodicity_preference TEXT DEFAULT 'monthly'")
+            conn.commit()
+    except Exception as e:
+        print(f"Error checking users schema: {e}")
+    finally:
+        conn.close()
+
+def get_user_periodicity():
+    """Recupera la preferencia de periodicidad (monthly/biweekly)."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT periodicity_preference FROM users WHERE id = ?", (uid,))
+        except:
+            # Si falla la primera vez, es porque falta la columna. La creamos y reintentamos.
+            conn.rollback()
+            check_users_periodicity_column()
+            cur.execute("SELECT periodicity_preference FROM users WHERE id = ?", (uid,))
+            
+        res = cur.fetchone()
+        return res[0] if res and res[0] else 'monthly'
+    finally: conn.close()
+
+def update_user_periodicity(val):
+    """Guarda la preferencia de periodicidad."""
+    conn = get_connection()
+    uid = get_uid()
+    try:
+        conn.execute("UPDATE users SET periodicity_preference = ? WHERE id = ?", (val, uid))
+        conn.commit()
+        return True
+    except: return False
+    finally: conn.close()

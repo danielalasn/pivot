@@ -6,6 +6,7 @@ import backend.data_manager as dm
 from utils import ui_helpers
 import pandas as pd
 from datetime import date, datetime
+# import concurrent.futures
 
 # --- ESTILOS ---
 CARD_STYLE = {"cursor": "pointer", "transition": "all 0.2s ease"}
@@ -115,7 +116,15 @@ layout = html.Div([
                 # xs=12: En celular ocupa todo el ancho (se va abajo, botón grande)
                 # md=4: En PC ocupa un tercio o un cuarto
                 dbc.Col([
-                    dbc.Button("¡Ejecutar Distribución!", id="btn-execute-dist", color="success", size="lg", className="fw-bold w-100")
+                    dcc.Loading(
+                        id="loading-dist-exec",
+                        type="circle",
+                        color="#198754",
+                        children=[
+                            html.Div(id="dummy-dist-exec", style={"display": "none"}), # <--- DUMMY
+                            dbc.Button("Ejecutar Distribución", id="btn-execute-dist", color="success", size="lg", className="fw-bold w-100")
+                        ]
+                    )
                 ], xs=12, md=4, className="ms-auto")
             ], className="align-items-center")
         ])
@@ -128,23 +137,65 @@ layout = html.Div([
 # ==============================================================================
 
 # 1. INIT
+# --- EN pages/distribution/revenue.py ---
+
+# 1. INIT (MODIFICADO)
+# --- EN pages/distribution/revenue.py ---
+
+# 1. INIT (OPTIMIZADO: 2 Consultas en lugar de 7)
+# --- EN pages/distribution/revenue.py ---
+
+# 1. INIT (OPTIMIZADO Y CON PERIODICIDAD)
 @callback(
     [Output("dd-source-account", "options"),
+     Output("dd-source-account", "value"),
      Output("store-acc-fc", "data"), 
      Output("store-acc-sv", "data"), 
      Output("store-acc-inv", "data"), 
      Output("store-acc-gf", "data"),
-     Output("input-total-income", "value")],
+     Output("input-total-income", "value"),
+     Output("periodicity-selector", "value")], # <--- NUEVO OUTPUT AL FINAL
     Input("url", "pathname")
 )
 def load_initial_data(path):
-    opts = dm.get_account_options()
-    acc_fc = dm.get_user_fc_fund_account()
-    acc_sv = dm.get_user_sv_fund_account()
-    acc_inv = dm.get_user_inv_fund_account()
-    acc_gf = dm.get_user_gf_fund_account()
+    uid = dm.get_uid()
+    # Si no hay usuario, retornamos defaults (monthly al final)
+    if not uid: return [], None, None, None, None, None, 0, "monthly"
+    
+    # 1. Traer opciones
+    opts = dm.get_account_options(uid)
+    
+    # 2. Preferencias de cuentas
+    prefs = dm.get_user_distribution_accounts() 
+    
+    # 3. Último ingreso
     last_income = dm.get_user_last_income()
-    return opts, acc_fc, acc_sv, acc_inv, acc_gf, last_income
+    
+    # 4. NUEVO: Traer periodicidad guardada
+    saved_periodicity = dm.get_user_periodicity()
+    
+    return opts, prefs['SOURCE'], prefs['FC'], prefs['SV'], prefs['INV'], prefs['GF'], last_income, saved_periodicity
+
+# --- EN pages/distribution/revenue.py ---
+
+# GUARDAR PERIODICIDAD AUTOMÁTICAMENTE
+@callback(
+    Output("rev-update-signal", "data", allow_duplicate=True),
+    Input("periodicity-selector", "value"),
+    prevent_initial_call=True
+)
+def save_periodicity_change(val):
+    if val: dm.update_user_periodicity(val)
+    return no_update
+# 1B. GUARDAR CUENTA DE ORIGEN
+@callback(
+    Output("rev-update-signal", "data", allow_duplicate=True),
+    Input("dd-source-account", "value"),
+    prevent_initial_call=True
+)
+def save_source_account_pref(val):
+    if val: dm.update_user_income_account(val)
+    return no_update
 
 @callback(
     Output("rev-update-signal", "data", allow_duplicate=True),
@@ -156,7 +207,14 @@ def save_income_change(val):
     return no_update
 
 # 2. UPDATE DASHBOARD
+# --- EN pages/distribution/revenue.py ---
+
+# --- EN pages/distribution/revenue.py ---
+
+# Borra: import concurrent.futures
+
 @callback(
+    # ... (Mismos Outputs que antes) ...
     [Output("cards-container", "children"),
      Output("lbl-grand-total", "children"),
      Output("detail-container", "children"),
@@ -164,6 +222,7 @@ def save_income_change(val):
      Output("detail-account-container", "children"),
      Output("detail-actions", "children"),
      Output("lbl-extra-income", "children")],
+    # ... (Mismos Inputs que antes) ...
     [Input("input-total-income", "value"),
      Input("periodicity-selector", "value"),
      Input("selected-group", "data"),
@@ -172,21 +231,29 @@ def save_income_change(val):
      Input("store-acc-fc", "data"), Input("store-acc-sv", "data"), Input("store-acc-inv", "data"), Input("store-acc-gf", "data")]
 )
 def update_dashboard(income_val, periodicity, selected_grp, disabled_ids, sig, s_fc, s_sv, s_inv, s_gf):
+    uid = dm.get_uid()
+    if not uid: return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+
     manual_income = float(income_val) if income_val else 0.0
     factor = 0.5 if periodicity == "biweekly" else 1.0
     disabled_ids = disabled_ids or []
-    acc_opts = dm.get_account_options()
+    
+    # USAR CACHÉ (Super rápido)
+    acc_opts = dm.get_account_options(uid) 
     today = date.today()
 
-    # A. CÁLCULO DEL EXTRA
-    extra_val = 0.0
+    # 1. CARGA DE DATOS (SECUENCIAL PERO CACHEADA)
+    df_fc = dm.get_fixed_costs_df()
+    df_sv = dm.get_savings_goals_df()
+    df_inv = dm.get_distribution_rules("Investment")
+    df_gf = dm.get_distribution_rules("GuiltFree")
     stab_acc_id = dm.get_user_stabilizer_account()
+
+    # --- A. CÁLCULO DEL EXTRA (OPTIMIZADO) ---
+    extra_val = 0.0
     if stab_acc_id:
-        conn = dm.get_connection()
-        try:
-            res = conn.execute("SELECT current_balance FROM accounts WHERE id=?", (stab_acc_id,)).fetchone()
-            stab_bal = res[0] if res else 0.0
-        finally: conn.close()
+        # EN LUGAR DE ABRIR CONEXIÓN MANUAL, USAMOS CACHÉ:
+        stab_bal = dm.get_account_balance_cached(stab_acc_id, uid)
         
         proj = dm.calculate_stabilizer_projection(0, stab_bal, frequency=periodicity)
         extra_val = round(proj['suggested_withdrawal'], 2)
@@ -197,19 +264,17 @@ def update_dashboard(income_val, periodicity, selected_grp, disabled_ids, sig, s
     if extra_val > 0:
         extra_text = f"+ ${extra_val:,.2f} (Extra Caja Chica) = ${real_income:,.2f} Total Real"
     
-    # B. CÁLCULOS (REDONDEADOS)
+    # --- B. CÁLCULOS DE GRUPOS ---
     
     # 1. FC
-    df_fc = dm.get_fixed_costs_df()
     total_fc = 0
     if not df_fc.empty:
         for _, r in df_fc.iterrows():
             if str(r['id']) not in disabled_ids:
                 val = max((r['amount']/100)*real_income, r.get('min_amount', 0)*factor) if r['is_percentage'] else r['monthly_cost']*factor
-                total_fc += round(val, 2)
+                total_fc += val
 
     # 2. SV
-    df_sv = dm.get_savings_goals_df()
     total_sv = 0
     sv_items_processed = []
     if not df_sv.empty:
@@ -220,7 +285,13 @@ def update_dashboard(income_val, periodicity, selected_grp, disabled_ids, sig, s
                 rem = r['target_amount'] - r['current_saved']
                 if rem > 0 and r['target_date']:
                     try:
-                        m = max((datetime.strptime(r['target_date'], '%Y-%m-%d').date() - today).days / 30.44, 1)
+                        # Convertir fecha de string a objeto date si es necesario
+                        if isinstance(r['target_date'], str):
+                            t_date = datetime.strptime(r['target_date'], '%Y-%m-%d').date()
+                        else:
+                            t_date = r['target_date'] # Ya es objeto date
+                            
+                        m = max((t_date - today).days / 30.44, 1)
                         p_need = (rem / m) * factor
                     except: pass
             elif mode == 'Fixed': p_need = r.get('fixed_contribution', 0) * factor
@@ -231,28 +302,32 @@ def update_dashboard(income_val, periodicity, selected_grp, disabled_ids, sig, s
             sv_items_processed.append({**r, 'suggested': p_need})
 
     # 3. INV
-    df_inv = dm.get_distribution_rules("Investment")
     total_inv = 0
     if not df_inv.empty:
         for _, r in df_inv.iterrows():
             if str(r['id']) not in disabled_ids:
                 val = (r['value']/100)*real_income if r['allocation_type'] == 'Percentage' else r['value']*factor
-                total_inv += round(val, 2)
+                total_inv += val
 
     # 4. GF
-    df_gf = dm.get_distribution_rules("GuiltFree")
     total_gf_rules = 0
     if not df_gf.empty:
         for _, r in df_gf.iterrows():
             if str(r['id']) not in disabled_ids:
                 val = (r['value']/100)*real_income if r['allocation_type'] == 'Percentage' else r['value']*factor
-                total_gf_rules += round(val, 2)
+                total_gf_rules += val
+
+    # Totales finales
+    total_fc = round(total_fc, 2)
+    total_sv = round(total_sv, 2)
+    total_inv = round(total_inv, 2)
+    total_gf_rules = round(total_gf_rules, 2)
 
     total_used = round(total_fc + total_sv + total_inv + total_gf_rules, 2)
     remanente = round(max(0, real_income - total_used), 2)
     total_gf_global = round(total_gf_rules + remanente, 2)
 
-    # --- CARDS ---
+    # --- GENERACIÓN DE UI (CARDS) ---
     def make_card(grp_id, title, total, color):
         pct = (total / real_income * 100) if real_income > 0 else 0
         st = {**CARD_STYLE, **SELECTED_STYLE} if selected_grp == grp_id else CARD_STYLE
@@ -269,7 +344,7 @@ def update_dashboard(income_val, periodicity, selected_grp, disabled_ids, sig, s
         make_card("GF", "Guilt Free", total_gf_global, "secondary"),
     ])
 
-    # --- DETALLES ---
+    # --- GENERACIÓN DE UI (LISTAS) ---
     detail_list = []
     actions = []
     title_text = ""
@@ -296,17 +371,17 @@ def update_dashboard(income_val, periodicity, selected_grp, disabled_ids, sig, s
         title_text = "Costos Fijos"
         current_acc_val = s_fc
         if not df_fc.empty:
-            for _, r in df_fc.iterrows():
-                val = max((r['amount']/100)*real_income, r.get('min_amount', 0)*factor) if r['is_percentage'] else r['monthly_cost']*factor
-                is_on = str(r['id']) not in disabled_ids
-                hint = f"{r['amount']}%" if r['is_percentage'] else "Fijo"
-                detail_list.append(make_item_row(r['id'], r['name'], round(val, 2), hint, is_on, "FC"))
+            for r in df_fc.itertuples():
+                val = max((r.amount/100)*real_income, (r.min_amount or 0)*factor) if r.is_percentage else r.monthly_cost*factor
+                is_on = str(r.id) not in disabled_ids
+                hint = f"{r.amount}%" if r.is_percentage else "Fijo"
+                detail_list.append(make_item_row(r.id, r.name, round(val, 2), hint, is_on, "FC"))
         else: detail_list = html.Div("Sin datos.", className="p-3")
 
     elif selected_grp == "SV":
         title_text = "Ahorros"
         current_acc_val = s_sv
-        if not df_sv.empty:
+        if sv_items_processed:
             for r in sv_items_processed:
                 is_on = str(r['id']) not in disabled_ids
                 hint = f"Modo: {r.get('contribution_mode', 'Date')}"
@@ -318,22 +393,22 @@ def update_dashboard(income_val, periodicity, selected_grp, disabled_ids, sig, s
         current_acc_val = s_inv
         actions = dbc.Button("+ Nueva Regla", id={"type": "btn-add-rule", "cat": "Investment"}, color="warning", size="sm", outline=True)
         if not df_inv.empty:
-             for _, r in df_inv.iterrows():
-                is_on = str(r['id']) not in disabled_ids
-                val = (r['value']/100)*real_income if r['allocation_type'] == 'Percentage' else r['value']*factor
-                detail_list.append(make_item_row(r['id'], r['name'], round(val, 2), "Regla Inv", is_on, "INV", allow_edit=True))
+             for r in df_inv.itertuples():
+                is_on = str(r.id) not in disabled_ids
+                val = (r.value/100)*real_income if r.allocation_type == 'Percentage' else r.value*factor
+                detail_list.append(make_item_row(r.id, r.name, round(val, 2), "Regla Inv", is_on, "INV", allow_edit=True))
         else: detail_list = html.Div("Sin reglas.", className="p-3")
 
     elif selected_grp == "GF":
         title_text = "Guilt Free"
         current_acc_val = s_gf
-        actions = dbc.Button("+ Nueva Regla", id={"type": "btn-add-rule", "cat": "GuiltFree"}, color="secondary", size="sm", outline=True)
+        # actions = dbc.Button("+ Nueva Regla", id={"type": "btn-add-rule", "cat": "GuiltFree"}, color="secondary", size="sm", outline=True)
         gf_items = []
         if not df_gf.empty:
-             for _, r in df_gf.iterrows():
-                is_on = str(r['id']) not in disabled_ids
-                val = (r['value']/100)*real_income if r['allocation_type'] == 'Percentage' else r['value']*factor
-                gf_items.append(make_item_row(r['id'], r['name'], round(val, 2), "Regla GF", is_on, "GF", allow_edit=True))
+             for r in df_gf.itertuples():
+                is_on = str(r.id) not in disabled_ids
+                val = (r.value/100)*real_income if r.allocation_type == 'Percentage' else r.value*factor
+                gf_items.append(make_item_row(r.id, r.name, round(val, 2), "Regla GF", is_on, "GF", allow_edit=True))
         
         detail_list = [
             html.Div(gf_items),
@@ -350,6 +425,7 @@ def update_dashboard(income_val, periodicity, selected_grp, disabled_ids, sig, s
         acc_dropdown = dcc.Dropdown(id="detail-account-dropdown", options=acc_opts, value=current_acc_val, placeholder=f"Cuenta para {title_text}", clearable=True, className="text-dark", optionHeight=65)
     
     grand_total_str = f"${(total_fc + total_sv + total_inv + total_gf_global):,.2f}"
+    
     return cards, grand_total_str, dbc.ListGroup(detail_list, flush=True), title_text, acc_dropdown, actions, extra_text
 
 # 3. SELECT GROUP
@@ -433,22 +509,32 @@ def delete_rule(n):
     return 1
 
 # 9. EJECUTAR (Con lógica de Transferencia Extra y BLINDAJE DE SEGURIDAD)
+# --- EN pages/distribution/revenue.py ---
+
+# 9. EJECUTAR (CORREGIDO: 4 VALORES EN TODOS LOS RETORNOS)
 @callback(
-    [Output("rev-feedback", "is_open"), Output("rev-feedback", "children"), Output("rev-feedback", "icon")],
+    [Output("rev-feedback", "is_open"), Output("rev-feedback", "children"), Output("rev-feedback", "icon"),
+     Output("dummy-dist-exec", "children")], # <--- 4to Output
     Input("btn-execute-dist", "n_clicks"),
     [State("input-total-income", "value"), State("periodicity-selector", "value"), State("dd-source-account", "value"), State("disabled-items", "data"),
      State("store-acc-fc", "data"), State("store-acc-sv", "data"), State("store-acc-inv", "data"), State("store-acc-gf", "data")],
     prevent_initial_call=True
 )
 def execute(n, income_val, periodicity, src_acc, disabled_ids, acc_fc, acc_sv, acc_inv, acc_gf):
-    if not n: return no_update
-    if not src_acc: return True, "Falta Cuenta Origen", "warning"
+    # 1. Retorno inicial (4 valores)
+    if not n: return no_update, no_update, no_update, no_update
+    
+    # 2. Validación Cuenta Origen (AQUÍ ESTABA EL ERROR)
+    # Antes devolvía 3, ahora devuelve 4 (agregamos "")
+    if not src_acc: return True, "Falta Cuenta Origen", "warning", ""
     
     manual_income = float(income_val) if income_val else 0.0
     factor = 0.5 if periodicity == "biweekly" else 1.0
     disabled_ids = disabled_ids or []
     dist_data = []
 
+    # --- CÁLCULOS ---
+    
     # 1. CÁLCULO PREVIO DEL EXTRA
     extra_val = 0.0
     stab_acc_id = dm.get_user_stabilizer_account()
@@ -462,10 +548,9 @@ def execute(n, income_val, periodicity, src_acc, disabled_ids, acc_fc, acc_sv, a
         proj = dm.calculate_stabilizer_projection(0, stab_bal, frequency=periodicity)
         extra_val = round(proj['suggested_withdrawal'], 2)
     
-    # 2. CALCULAR TOTAL REAL DISPONIBLE
     real_income = round(manual_income + extra_val, 2)
 
-    # 3. CONSTRUIR LISTA DE DISTRIBUCIÓN
+    # 2. CONSTRUIR LISTA DE DISTRIBUCIÓN
     def add(grp, row, target, amount):
         if amount > 0: dist_data.append({'type': grp, 'id': row['id'], 'amount': round(amount, 2), 'target_acc': target, 'name': row['name']})
 
@@ -505,28 +590,28 @@ def execute(n, income_val, periodicity, src_acc, disabled_ids, acc_fc, acc_sv, a
     # GF Sobrante
     curr_total = sum(d['amount'] for d in dist_data)
     
-    # 🚨 VALIDACIÓN CRÍTICA (Tolerancia 1 centavo) 🚨
+    # 3. VALIDACIÓN DE TOTALES (Retorno de 4 valores)
     if curr_total > real_income + 0.01: 
-        return True, f"Error: Tus gastos (${curr_total:,.2f}) superan el ingreso total (${real_income:,.2f}). Ajusta tus reglas.", "danger"
+        return True, f"Error: Tus gastos (${curr_total:,.2f}) superan el ingreso total (${real_income:,.2f}). Ajusta tus reglas.", "danger", ""
 
     rem = round(max(0, real_income - curr_total), 2)
     if rem > 0: dist_data.append({'type': 'GF', 'id': 0, 'amount': rem, 'target_acc': acc_gf, 'name': 'Guilt Free (Sobrante)'})
 
-    # 4. EJECUCIÓN CON LÓGICA DE MISMA CUENTA
+    # 4. EJECUCIÓN
     final_msg_prefix = ""
     is_same_account = (str(stab_acc_id) == str(src_acc))
     
-    # Paso A: Mover Extra (Solo si es diferente cuenta)
     if extra_val > 0:
         if not is_same_account:
             success_stab, msg_stab = dm.execute_stabilizer_withdrawal(extra_val, stab_acc_id, src_acc)
             if not success_stab:
-                 return True, f"Error moviendo Extra: {msg_stab}", "danger"
+                 # Retorno de 4 valores en error
+                 return True, f"Error moviendo Extra: {msg_stab}", "danger", ""
             final_msg_prefix = f"Se movieron ${extra_val:,.2f} de Caja Chica. "
         else:
             final_msg_prefix = f"Extra de ${extra_val:,.2f} ya disponible en cuenta. "
 
-    # Paso B: Distribuir (Siempre se distribuye el total real)
     success, msg = dm.execute_distribution_process(real_income, src_acc, dist_data)
     
-    return True, final_msg_prefix + msg, "success" if success else "danger"
+    # 5. RETORNO FINAL (4 valores: Toast Open, Toast Msg, Toast Icon, Dummy)
+    return True, final_msg_prefix + msg, "success" if success else "danger", ""

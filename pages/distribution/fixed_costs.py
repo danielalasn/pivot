@@ -119,14 +119,21 @@ layout = html.Div([
 # ==============================================================================
 
 # 1. Cargar Opciones
+# --- EN pages/distribution/fixed_costs.py ---
+
+# 1. Cargar Opciones
 @callback(
     [Output("fc-account-selector", "options"), Output("fc-account-selector", "value")],
     Input("url", "pathname")
 )
 def load_account_options(path):
     if path != "/distribucion": return no_update, no_update
-    return dm.get_account_options(), dm.get_user_fc_fund_account()
-
+    
+    uid = dm.get_uid() # Obtener ID
+    if not uid: return [], None
+    
+    # Pasar ID a la función cacheada
+    return dm.get_account_options(uid), dm.get_user_fc_fund_account()
 # 2. Guardar Preferencia
 @callback(Output("fc-update-signal", "data", allow_duplicate=True), Input("fc-account-selector", "value"), prevent_initial_call=True)
 def save_pref(acc_id):
@@ -343,7 +350,7 @@ def toggle_pay_fc_modal(n_pay, n_cancel, is_open, default_fc_acc):
     if isinstance(trig, dict) and trig['type'] == "fc-btn-pay":
         # Verificar click real
         if not ctx.triggered[0]['value']: return no_update
-        
+        uid = dm.get_uid()
         fc_id = trig['index']
         
         # Buscar el costo fijo específico para obtener su acumulado y nombre
@@ -353,7 +360,7 @@ def toggle_pay_fc_modal(n_pay, n_cancel, is_open, default_fc_acc):
         current_alloc = row.get('current_allocation', 0) or 0
         name = row['name']
         
-        acc_opts = dm.get_account_options()
+        acc_opts = dm.get_account_options(uid)
         msg = f"Vas a registrar el pago de '{name}'. Tienes apartado: ${current_alloc:,.2f}"
         
         # Pre-llenamos el monto con lo acumulado (puedes cambiar esto si prefieres que empiece en 0)

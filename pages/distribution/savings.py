@@ -217,11 +217,14 @@ def toggle_inputs(mode):
 )
 def load_sv_options(path):
     if not path or "distribucion" not in path: return no_update, no_update, no_update
-    acc_opts = dm.get_account_options()
+    
+    uid = dm.get_uid()
+    if not uid: return [], None, []
+    
+    acc_opts = dm.get_account_options(uid) # Pasar UID
     sv_acc = dm.get_user_sv_fund_account()
-    cat_opts = dm.get_all_categories_options() # <--- NUEVO
+    cat_opts = dm.get_all_categories_options()
     return acc_opts, sv_acc, cat_opts
-
 @callback(
     Output("sv-update-signal", "data", allow_duplicate=True), 
     Input("sv-account-selector", "value"), 
@@ -477,14 +480,15 @@ def toggle_withdraw(n_wd, n_cancel, default_acc):
     if trig == "wd-btn-cancel": return False, no_update, no_update, no_update, no_update, no_update, no_update
 
     if isinstance(trig, dict) and ctx.triggered[0]['value']:
+        uid = dm.get_uid()
         s_id = trig['index']
         # Buscar nombre
         df = dm.get_savings_goals_df()
         row = df[df['id'] == s_id].iloc[0]
         title = f"Sacar dinero de: {row['name']}"
         
-        accs = dm.get_account_options()
-        return True, s_id, title, accs, default_acc, accs, "" 
+        accs = dm.get_account_options(uid)
+        return True, s_id, title, accs, default_acc, accs, ""
         
     return no_update
 

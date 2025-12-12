@@ -240,7 +240,15 @@ layout = dbc.Container([
                     ], className="mb-4"),
 
                     # --- BOTÓN REGISTRAR ---
-                    dbc.Button("Registrar", id="btn-add-trans", color="success", className="w-100 fw-bold", size="md"),
+                    dcc.Loading(
+                        id="loading-btn-trans",
+                        type="circle",
+                        color="#28a745", # Verde éxito
+                        children=[
+                            html.Div(id="dummy-trans-submit", style={"display": "none"}), # <--- EL DUMMY
+                            dbc.Button("Registrar", id="btn-add-trans", color="success", className="w-100 fw-bold", size="md"),
+                        ]
+                    ),
                     html.Div(id="msg-add-trans", className="mt-1 text-center small")
                 ])
             ], className="data-card")
@@ -250,7 +258,7 @@ layout = dbc.Container([
         dbc.Col([
             dbc.Card([
                 dbc.CardBody(id="trans-table-container", 
-                            style={"padding": "0", "maxHeight": "50vh", "overflowY": "auto"}) 
+                            style={"padding": "0", "maxHeight": "70vh", "overflowY": "auto"}) 
             ],) 
         ], lg=7, md=12)
     ])
@@ -341,20 +349,31 @@ def generate_table(dataframe):
 # ------------------------------------------------------------------------------
 
 # 1. Cargar Listas (ACTUALIZADO: Carga Destination Dropdown)
+# --- EN pages/transactions.py ---
+
+# 1. Cargar Listas (CORREGIDO: ENVÍA USER_ID)
 @callback(
     [Output("input-account-dd", "options"),
      Output("input-category", "options"),     
      Output("new-subcat-parent-dd", "options"),
-     Output("input-account-dest-dd", "options")], # <--- NUEVO OUTPUT
+     Output("input-account-dest-dd", "options")],
     [Input("url", "pathname"),
      Input("global-update-signal", "data")]
 )
 def load_initial_data(pathname, signal):
     if pathname == "/transacciones":
-        acc_opts = dm.get_account_options()
+        # 1. OBTENER EL USUARIO ACTUAL
+        uid = dm.get_uid()
+        if not uid: return [], [], [], []
+        
+        # 2. PASAR EL UID A LA FUNCIÓN
+        acc_opts = dm.get_account_options(uid) 
+        
         cat_opts = dm.get_all_categories_options()
-        return acc_opts, cat_opts, cat_opts, acc_opts # Regresamos acc_opts para el destino también
+        return acc_opts, cat_opts, cat_opts, acc_opts 
+        
     return [], [], [], []
+
 
 # 1A. Sync Listas en Modal
 @callback(
@@ -461,11 +480,15 @@ def update_subcats_modal(parent, sig):
 
 
 # 2. Registrar Transacción (ACTUALIZADO CON LÓGICA DE TRANSFERENCIA)
+# --- EN pages/transactions.py ---
+
+# 2. Registrar Transacción
 @callback(
     [Output("msg-add-trans", "children"),
      Output("trans-table-container", "children"),
      Output("input-name", "value"),
-     Output("input-amount", "value")],
+     Output("input-amount", "value"),
+     Output("dummy-trans-submit", "children")], # Output del loading
     [Input("btn-add-trans", "n_clicks")],
     [State("input-date", "date"),
      State("input-time", "value"),
@@ -475,50 +498,43 @@ def update_subcats_modal(parent, sig):
      State("input-trans-type", "value"),
      State("input-account-dd", "value"),
      State("input-subcategory", "value"),
-     State("input-account-dest-dd", "value")] # <--- NUEVO ESTADO: Destino
+     State("input-account-dest-dd", "value")]
 )
 def add_transaction_callback(n_clicks, date_val, time_val, name, amount, category, t_type, acc_id, subcat, dest_acc_id):
-    df = dm.get_transactions_df()
-    if not n_clicks: return "", generate_table(df), no_update, no_update
+    # 1. OBTENER UID
+    uid = dm.get_uid()
+    if not uid: return "", no_update, no_update, no_update, "" # Seguridad
 
-    # Validaciones básicas
-    if not all([date_val, amount, t_type, acc_id]):
-        return html.Span("Faltan campos obligatorios.", className="text-danger"), generate_table(df), no_update, no_update
+    # 2. USAR UID
+    df = dm.get_transactions_df(uid) 
     
-    # --- COMBINAR FECHA Y HORA ---
+    if not n_clicks: return "", generate_table(df), no_update, no_update, no_update
+
+    if not all([date_val, amount, t_type, acc_id]):
+        return html.Span("Faltan campos.", className="text-danger"), generate_table(df), no_update, no_update, ""
+    
     final_time = time_val if time_val else "00:00"
-    full_date_str = f"{date_val} {final_time}" # <--- ¡Aquí creaste la variable correcta!
+    full_date_str = f"{date_val} {final_time}"
 
     try: amt = float(amount)
-    except: return html.Span("Monto inválido", className="text-danger"), generate_table(df), no_update, no_update
+    except: return html.Span("Monto inválido", className="text-danger"), generate_table(df), no_update, no_update, ""
     
     final_name = name if name else "-"
 
-    # --- LÓGICA DIFERENCIADA ---
     if t_type == "Transfer":
-        # CASO: TRANSFERENCIA
-        if not dest_acc_id:
-             return html.Span("Selecciona la cuenta destino.", className="text-danger"), generate_table(df), no_update, no_update
-        if str(acc_id) == str(dest_acc_id):
-             return html.Span("Origen y destino son iguales.", className="text-danger"), generate_table(df), no_update, no_update
-
-        # Llamada a función backend de transferencia
+        if not dest_acc_id: return html.Span("Falta destino.", className="text-danger"), generate_table(df), no_update, no_update, ""
+        if str(acc_id) == str(dest_acc_id): return html.Span("Cuentas iguales.", className="text-danger"), generate_table(df), no_update, no_update, ""
         success, msg = dm.add_transfer(full_date_str, final_name, amt, acc_id, dest_acc_id)
-
     else:
-        # CASO: INGRESO O GASTO NORMAL
-        if not category:
-            return html.Span("Falta la categoría.", className="text-danger"), generate_table(df), no_update, no_update
-        
+        if not category: return html.Span("Falta categoría.", className="text-danger"), generate_table(df), no_update, no_update, ""
         success, msg = dm.add_transaction(full_date_str, final_name, amt, category, t_type, acc_id, subcat)
-    # RESPUESTA
+
     if success:
-        df_new = dm.get_transactions_df()
-        return html.Span(msg, className="text-success"), generate_table(df_new), "", ""
+        # 3. USAR UID PARA RECARGAR TABLA
+        df_new = dm.get_transactions_df(uid) 
+        return html.Span(msg, className="text-success"), generate_table(df_new), "", "", ""
     else:
-        return html.Span(msg, className="text-danger"), generate_table(df), no_update, no_update
-
-
+        return html.Span(msg, className="text-danger"), generate_table(df), no_update, no_update, ""
 # 3. CAPTURAR ID y ABRIR MODAL
 @callback(
     [Output('trans-viewing-id', 'data'),
@@ -581,6 +597,9 @@ def open_delete_modal(trigger_del, cancel_del):
 
 
 # 6. GUARDAR EDICIÓN o CONFIRMAR BORRADO
+# --- EN pages/transactions.py ---
+
+# 6. GUARDAR EDICIÓN o CONFIRMAR BORRADO
 @callback(
     [Output('trans-edit-success', 'data'), 
      Output("trans-delete-modal", "is_open", allow_duplicate=True),
@@ -601,6 +620,10 @@ def open_delete_modal(trigger_del, cancel_del):
     prevent_initial_call=True
 )
 def handle_save_delete_flow(save_click, delete_click, trans_id, date, name, amount, category, t_type, acc_id, subcat):
+    # 1. OBTENER UID
+    uid = dm.get_uid()
+    if not uid: return no_update, no_update, no_update, no_update, no_update, no_update
+
     trig_id = ctx.triggered_id
     ts = int(time.time() * 1000)
 
@@ -616,16 +639,21 @@ def handle_save_delete_flow(save_click, delete_click, trans_id, date, name, amou
 
         success, msg = dm.update_transaction(trans_id, date, final_name, amt, category, t_type, acc_id, subcat)
         
-        if success: return ts, False, generate_table(dm.get_transactions_df()), *ui_helpers.mensaje_alerta_exito("success", msg)
-        else: return no_update, no_update, no_update, *ui_helpers.mensaje_alerta_exito("danger", msg)
+        if success: 
+            # 2. PASAR UID AL RECARGAR
+            return ts, False, generate_table(dm.get_transactions_df(uid)), *ui_helpers.mensaje_alerta_exito("success", msg)
+        else: 
+            return no_update, no_update, no_update, *ui_helpers.mensaje_alerta_exito("danger", msg)
 
     if trig_id == "trans-btn-del-confirm":
         success, msg = dm.delete_transaction(trans_id)
-        if success: return ts, False, generate_table(dm.get_transactions_df()), *ui_helpers.mensaje_alerta_exito("success", msg)
-        else: return no_update, False, no_update, *ui_helpers.mensaje_alerta_exito("danger", msg)
+        if success: 
+            # 3. PASAR UID AL RECARGAR
+            return ts, False, generate_table(dm.get_transactions_df(uid)), *ui_helpers.mensaje_alerta_exito("success", msg)
+        else: 
+            return no_update, False, no_update, *ui_helpers.mensaje_alerta_exito("danger", msg)
 
     return no_update, no_update, no_update, no_update, no_update, no_update
-
 # --- CALLBACK PARA DETECTAR HORA LOCAL DEL DISPOSITIVO ---
 clientside_callback(
     """
